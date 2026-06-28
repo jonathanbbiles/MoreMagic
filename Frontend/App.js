@@ -14,15 +14,15 @@ import { SafeAreaView, ScrollView, View, Text, StyleSheet, RefreshControl, Platf
 import Constants from 'expo-constants';
 import { StatusBar } from 'expo-status-bar';
 
-const HARDCODED_DEFAULT = 'https://moremagic-backend.onrender.com';
+const HARDCODED_DEFAULT = 'https://moremagic.onrender.com';
 
 function resolveBackendUrl() {
   const fromEnv = process.env.EXPO_PUBLIC_BACKEND_URL;
   if (fromEnv) return fromEnv;
   const fromExtra = Constants?.expoConfig?.extra?.backendUrl;
-  if (fromExtra && fromExtra !== HARDCODED_DEFAULT) return fromExtra;
+  if (fromExtra) return fromExtra;
   if (Platform.OS === 'web' && typeof window !== 'undefined') return window.location.origin;
-  return fromExtra || HARDCODED_DEFAULT;
+  return HARDCODED_DEFAULT;
 }
 
 const API_TOKEN = process.env.EXPO_PUBLIC_API_TOKEN || '';
