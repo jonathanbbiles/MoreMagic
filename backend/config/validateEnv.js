@@ -52,12 +52,19 @@ function validateEnv(env = process.env) {
     errors.push(`TRADING_MODE must be "paper" or "live" (got "${env.TRADING_MODE}")`);
   }
   cfg.assetClass = String(env.ASSET_CLASS || '').toLowerCase();
-  if (!['equities', 'crypto'].includes(cfg.assetClass)) {
-    errors.push(`ASSET_CLASS must be "equities" or "crypto" (got "${env.ASSET_CLASS}")`);
+  if (!['equities', 'crypto', 'both'].includes(cfg.assetClass)) {
+    errors.push(`ASSET_CLASS must be "equities", "crypto", or "both" (got "${env.ASSET_CLASS}")`);
   }
-  cfg.executionVenue = deriveVenue(env);
-  if (!['alpaca_equities', 'alpaca_crypto'].includes(cfg.executionVenue)) {
-    errors.push(`EXECUTION_VENUE unsupported: "${cfg.executionVenue}"`);
+  // "both" runs one engine per class (derived at boot); equities rules apply
+  // whenever equities is in play.
+  const equitiesInvolved = cfg.assetClass === 'equities' || cfg.assetClass === 'both';
+  if (cfg.assetClass === 'both') {
+    cfg.executionVenue = 'both';
+  } else {
+    cfg.executionVenue = deriveVenue(env);
+    if (!['alpaca_equities', 'alpaca_crypto'].includes(cfg.executionVenue)) {
+      errors.push(`EXECUTION_VENUE unsupported: "${cfg.executionVenue}"`);
+    }
   }
 
   // ---- Alpaca connection (creds always required) -----------------------------
@@ -99,9 +106,15 @@ function validateEnv(env = process.env) {
   // ---- Universe --------------------------------------------------------------
   cfg.equitiesUniverse = list(env.EQUITIES_UNIVERSE);
   cfg.cryptoUniverse = list(env.CRYPTO_UNIVERSE);
-  cfg.universe = cfg.assetClass === 'crypto' ? cfg.cryptoUniverse : cfg.equitiesUniverse;
-  if (cfg.universe.length === 0) {
-    errors.push(`Universe for ASSET_CLASS=${cfg.assetClass} is empty`);
+  if (cfg.assetClass === 'both') {
+    cfg.universe = []; // each derived engine carries its own per-class universe
+    if (cfg.equitiesUniverse.length === 0) errors.push('EQUITIES_UNIVERSE is empty (required for ASSET_CLASS=both)');
+    if (cfg.cryptoUniverse.length === 0) errors.push('CRYPTO_UNIVERSE is empty (required for ASSET_CLASS=both)');
+  } else {
+    cfg.universe = cfg.assetClass === 'crypto' ? cfg.cryptoUniverse : cfg.equitiesUniverse;
+    if (cfg.universe.length === 0) {
+      errors.push(`Universe for ASSET_CLASS=${cfg.assetClass} is empty`);
+    }
   }
 
   // ---- Sizing ----------------------------------------------------------------
@@ -150,7 +163,7 @@ function validateEnv(env = process.env) {
   cfg.eodFlattenEt = String(env.EOD_FLATTEN_ET || '').trim();
   cfg.entryCutoffEt = String(env.ENTRY_CUTOFF_ET || '').trim();
   cfg.cryptoSessionBoundaryEt = String(env.CRYPTO_SESSION_BOUNDARY_ET || '').trim();
-  if (cfg.assetClass === 'equities') {
+  if (equitiesInvolved) {
     for (const [k, v] of [
       ['MARKET_OPEN_ET', cfg.marketOpenEt],
       ['MARKET_CLOSE_ET', cfg.marketCloseEt],
@@ -159,7 +172,8 @@ function validateEnv(env = process.env) {
     ]) {
       if (!isHHMM(v)) errors.push(`${k} must be HH:MM 24h (got "${v}")`);
     }
-  } else if (cfg.cryptoSessionBoundaryEt && !isHHMM(cfg.cryptoSessionBoundaryEt)) {
+  }
+  if (cfg.cryptoSessionBoundaryEt && !isHHMM(cfg.cryptoSessionBoundaryEt)) {
     errors.push(`CRYPTO_SESSION_BOUNDARY_ET must be HH:MM or empty (got "${cfg.cryptoSessionBoundaryEt}")`);
   }
 
@@ -167,7 +181,7 @@ function validateEnv(env = process.env) {
   cfg.pdtEquityFloorUsd = num(env.PDT_EQUITY_FLOOR_USD);
   cfg.pdtMaxDayTrades = num(env.PDT_MAX_DAY_TRADES);
   cfg.pdtEnforce = bool(env.PDT_ENFORCE);
-  if (cfg.assetClass === 'equities') {
+  if (equitiesInvolved) {
     if (!(cfg.pdtEquityFloorUsd >= 0)) errors.push('PDT_EQUITY_FLOOR_USD must be >= 0');
     if (!(Number.isInteger(cfg.pdtMaxDayTrades) && cfg.pdtMaxDayTrades >= 0)) errors.push('PDT_MAX_DAY_TRADES must be a non-negative integer');
   }

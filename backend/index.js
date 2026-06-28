@@ -20,8 +20,44 @@ const { selectAdapter } = require('./modules/execution');
 const { createEngine } = require('./trade');
 const { createAuthMiddleware } = require('./auth');
 const { createLogBuffer } = require('./modules/logger');
-const { diagnostics } = require('./modules/diagnostics/recorder');
-const { circuitBreaker } = require('./modules/safety/circuitBreaker');
+const { createRecorder } = require('./modules/diagnostics/recorder');
+const { createCircuitBreaker } = require('./modules/safety/circuitBreaker');
+
+/**
+ * Expand the validated config into one per-asset config per running engine.
+ * Single asset => [config] (unchanged). ASSET_CLASS=both => an equities config
+ * and a crypto config, each a self-contained single-asset config the engine,
+ * adapter, and gates already understand.
+ */
+function deriveAssetConfigs(config) {
+  if (config.assetClass !== 'both') return [config];
+  return [
+    Object.freeze({ ...config, assetClass: 'equities', executionVenue: 'alpaca_equities', universe: config.equitiesUniverse }),
+    Object.freeze({ ...config, assetClass: 'crypto', executionVenue: 'alpaca_crypto', universe: config.cryptoUniverse }),
+  ];
+}
+
+/**
+ * In "both" mode the two engines share ONE Alpaca account, and Alpaca's
+ * positions/orders endpoints return the whole account. Without this filter each
+ * engine would adopt and manage the OTHER asset's positions (e.g. the equities
+ * engine EOD-flattening crypto). Restrict each engine's view to its own asset
+ * class via raw.asset_class, falling back to the "/" in crypto symbols.
+ */
+function assetFilteredAdapter(adapter, assetClass) {
+  const wantCrypto = assetClass === 'crypto';
+  const isCrypto = (x) => {
+    const ac = x && x.raw && x.raw.asset_class;
+    if (ac) return String(ac).includes('crypto');
+    return typeof (x && x.symbol) === 'string' && x.symbol.includes('/');
+  };
+  const keep = (x) => isCrypto(x) === wantCrypto;
+  return {
+    ...adapter,
+    async getPositions(...a) { return (await adapter.getPositions(...a)).filter(keep); },
+    async getOpenOrders(...a) { return (await adapter.getOpenOrders(...a)).filter(keep); },
+  };
+}
 
 /** Build the full runtime context from the environment (no I/O beyond validate). */
 function buildContext(env = process.env) {
@@ -33,14 +69,37 @@ function buildContext(env = process.env) {
     // eslint-disable-next-line no-console
     console.log(`[${new Date(e.ts).toISOString()}] ${msg}`);
   };
-  const adapter = selectAdapter(config);
-  const engine = createEngine({ adapter, config, diagnostics, circuitBreaker, logger: log });
-  return { config, adapter, engine, diagnostics, circuitBreaker, logBuffer, log };
+
+  const assetConfigs = deriveAssetConfigs(config);
+  const multi = assetConfigs.length > 1;
+  const units = assetConfigs.map((ac) => {
+    let adapter = selectAdapter(ac);
+    if (multi) adapter = assetFilteredAdapter(adapter, ac.assetClass);
+    const diagnostics = createRecorder();
+    const circuitBreaker = createCircuitBreaker();
+    const logger = multi ? (m, l) => log(`[${ac.assetClass}] ${m}`, l) : log;
+    const engine = createEngine({ adapter, config: ac, diagnostics, circuitBreaker, logger });
+    return { assetClass: ac.assetClass, venue: ac.executionVenue, config: ac, adapter, engine, diagnostics, circuitBreaker };
+  });
+
+  const primary = units[0];
+  // Top-level fields mirror the primary engine so single-asset clients (the
+  // tests, the Expo app) keep working unchanged.
+  return {
+    config,
+    units,
+    logBuffer,
+    log,
+    adapter: primary.adapter,
+    engine: primary.engine,
+    diagnostics: primary.diagnostics,
+    circuitBreaker: primary.circuitBreaker,
+  };
 }
 
 /** Create the Express app for a given context. Does not listen. */
 function createApp(ctx) {
-  const { config, engine, logBuffer } = ctx;
+  const { config, units, logBuffer } = ctx;
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json());
@@ -70,8 +129,22 @@ function createApp(ctx) {
   });
 
   // Observational dashboard snapshot (every figure is a real field; missing => null).
+  // `assets[]` carries one entry per running engine; the top-level fields mirror
+  // the primary (first) asset so single-asset clients keep their existing shape.
   app.get('/dashboard', auth, (req, res) => {
-    const view = engine.getView();
+    const assets = units.map((u) => {
+      const view = u.engine.getView();
+      return {
+        assetClass: u.config.assetClass,
+        venue: u.config.executionVenue,
+        brokerOk: view.brokerOk,
+        lastLoopTs: view.tsMs,
+        account: view.account, // null when the broker is unreachable
+        positions: view.positions || [],
+        meta: u.diagnostics.getMeta(),
+      };
+    });
+    const primary = assets[0];
     res.json({
       ok: true,
       ts: Date.now(),
@@ -81,11 +154,12 @@ function createApp(ctx) {
       venue: config.executionVenue,
       paper: config.isPaper,
       enabled: config.enableTrading,
-      brokerOk: view.brokerOk,
-      lastLoopTs: view.tsMs,
-      account: view.account, // null when the broker is unreachable
-      positions: view.positions || [],
-      meta: diagnostics.getMeta(),
+      brokerOk: primary.brokerOk,
+      lastLoopTs: primary.lastLoopTs,
+      account: primary.account, // null when the broker is unreachable
+      positions: primary.positions,
+      meta: primary.meta,
+      assets,
     });
   });
 
@@ -114,25 +188,34 @@ function start() {
     process.exit(1);
     return;
   }
-  const { config, engine, log } = ctx;
+  const { config, units, log } = ctx;
   const app = createApp(ctx);
+  const multi = units.length > 1;
 
   const server = app.listen(config.port, () => {
     log(
-      `MoreMagic backend up on :${config.port} | mode=${config.tradingMode} asset=${config.assetClass} venue=${config.executionVenue} paper=${config.isPaper}`,
+      `MoreMagic backend up on :${config.port} | mode=${config.tradingMode} asset=${config.assetClass} venue=${config.executionVenue} paper=${config.isPaper} engines=${units.length}`,
     );
   });
 
-  // Scheduled strategy loop with a concurrency guard.
+  // Scheduled strategy loop with a concurrency guard. Runs every engine each
+  // tick (one engine for a single asset class, two for ASSET_CLASS=both).
   let ticking = false;
   const tick = async () => {
     if (ticking) return;
     ticking = true;
     try {
-      const r = await engine.runOnce();
-      if (!r.ok) log(`loop: degraded (${r.error})`, 'warn');
-    } catch (e) {
-      log(`loop: unhandled ${e.message}`, 'error');
+      await Promise.all(
+        units.map(async (u) => {
+          const tag = multi ? `[${u.assetClass}] ` : '';
+          try {
+            const r = await u.engine.runOnce();
+            if (!r.ok) log(`${tag}loop: degraded (${r.error})`, 'warn');
+          } catch (e) {
+            log(`${tag}loop: unhandled ${e.message}`, 'error');
+          }
+        }),
+      );
     } finally {
       ticking = false;
     }
@@ -154,4 +237,4 @@ function start() {
 
 if (require.main === module) start();
 
-module.exports = { buildContext, createApp, start };
+module.exports = { buildContext, createApp, start, deriveAssetConfigs, assetFilteredAdapter };

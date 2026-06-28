@@ -83,12 +83,21 @@
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
   var signClass = function (n) { return n === undefined || n === null ? 'muted' : (n >= 0 ? 'good' : 'bad'); };
 
-  function statusOf(data, error) {
-    if (error || !data) return { label: 'OFFLINE', color: '#6b7280' };
-    if (data.meta && data.meta.safety && data.meta.safety.brakeActive) return { label: 'BLOCKED', color: '#ef4444' };
-    if (data.enabled === false || (data.meta && data.meta.lastScan && data.meta.lastScan.canEnter === false))
+  function assetStatus(a, enabled) {
+    if (!a) return { label: 'OFFLINE', color: '#6b7280' };
+    var meta = a.meta || {};
+    if (meta.safety && meta.safety.brakeActive) return { label: 'BLOCKED', color: '#ef4444' };
+    if (enabled === false || (meta.lastScan && meta.lastScan.canEnter === false))
       return { label: 'PAUSED', color: '#f59e0b' };
     return { label: 'RUNNING', color: '#22c55e' };
+  }
+  function overallStatus(assets, enabled, error) {
+    if (error || !assets.length) return { label: 'OFFLINE', color: '#6b7280' };
+    var labels = assets.map(function (a) { return assetStatus(a, enabled).label; });
+    if (labels.indexOf('BLOCKED') >= 0) return { label: 'BLOCKED', color: '#ef4444' };
+    if (labels.indexOf('RUNNING') >= 0) return { label: 'RUNNING', color: '#22c55e' };
+    if (labels.indexOf('PAUSED') >= 0) return { label: 'PAUSED', color: '#f59e0b' };
+    return { label: 'OFFLINE', color: '#6b7280' };
   }
 
   function stat(label, value, good) {
@@ -96,62 +105,39 @@
       '<div class="statValue ' + signClass(good) + '">' + value + '</div></div>';
   }
 
-  function render(data, error) {
-    var s = statusOf(data, error);
-    var badge = document.getElementById('badge');
-    badge.textContent = s.label; badge.style.background = s.color;
-
-    var paper = data && data.paper ? 'paper' : (data ? 'LIVE' : '—');
-    document.getElementById('subtle').textContent =
-      dash(data && data.mode) + ' · ' + dash(data && data.assetClass) + ' · ' + paper + ' · v' + dash(data && data.version);
-
-    var errEl = document.getElementById('error');
-    if (error) { errEl.style.display = ''; errEl.textContent = 'backend unreachable: ' + error; }
-    else { errEl.style.display = 'none'; }
-
-    if (!data) { document.getElementById('content').innerHTML = ''; return; }
-
-    var acct = data.account || null;
-    var meta = data.meta || {};
+  // One asset's blocks: engine+safety, scorecard, positions, skip reasons.
+  // `suffix` labels the cards with the asset class when more than one is running.
+  function assetSection(a, enabled, multi) {
+    var meta = a.meta || {};
     var sc = meta.scorecard || {};
-    var positions = data.positions || [];
     var safety = meta.safety || {};
     var lastScan = meta.lastScan || {};
-    var dayPnl = acct && acct.equity != null && acct.lastEquity != null ? acct.equity - acct.lastEquity : null;
+    var positions = a.positions || [];
+    var acct = a.account || null;
+    var suffix = multi ? ' · ' + String(a.assetClass).toUpperCase() : '';
+    var st = assetStatus(a, enabled);
 
-    var html = '';
-
-    // Equity
-    html += '<div class="card"><div class="cardLabel">EQUITY</div>' +
-      '<div class="bigNum">' + money(acct && acct.equity) + '</div><div class="row">' +
-      stat('Day P&L', dayPnl == null ? '—' : money(dayPnl), dayPnl) +
-      stat('Cash', money(acct && acct.cash)) +
-      stat('Buying Pwr', money(acct && acct.buyingPower)) +
-      '</div></div>';
-
-    // Engine + Safety
-    html += '<div class="row">' +
-      '<div class="card half"><div class="cardLabel">ENGINE</div>' +
-      '<div class="kv">Trading: ' + (data.enabled ? 'on' : 'off') + '</div>' +
-      '<div class="kv">Broker: ' + (data.brokerOk ? 'connected' : '—') + '</div>' +
+    var html = '<div class="row">' +
+      '<div class="card half"><div class="cardLabel">ENGINE' + suffix + '</div>' +
+      (multi ? '<div class="kv"><span class="badge" style="background:' + st.color + ';font-size:10px">' + st.label + '</span></div>' : '') +
+      '<div class="kv">Trading: ' + (enabled ? 'on' : 'off') + '</div>' +
+      '<div class="kv">Broker: ' + (a.brokerOk ? 'connected' : '—') + '</div>' +
       '<div class="kv">Market: ' + dash(lastScan.marketReason) + '</div>' +
       '<div class="kv">Day trades: ' + dash(acct && acct.daytradeCount) + '</div></div>' +
-      '<div class="card half"><div class="cardLabel">SAFETY BRAKE</div>' +
+      '<div class="card half"><div class="cardLabel">SAFETY BRAKE' + suffix + '</div>' +
       '<div class="kv ' + (safety.brakeActive ? 'bad' : 'good') + '">' +
       (safety.brakeActive ? 'ACTIVE' : 'clear') + '</div>' +
       (safety.reasons || []).map(function (r) { return '<div class="kvSmall">· ' + esc(r) + '</div>'; }).join('') +
       '</div></div>';
 
-    // Scorecard
-    html += '<div class="card"><div class="cardLabel">CLOSED-TRADE SCORECARD</div><div class="row">' +
+    html += '<div class="card"><div class="cardLabel">CLOSED-TRADE SCORECARD' + suffix + '</div><div class="row">' +
       stat('Trades', dash(sc.closedTrades)) +
       stat('Win rate', sc.winRate == null ? '—' : pct(sc.winRate)) +
       stat('Avg', sc.avgPnlBps == null ? '—' : sc.avgPnlBps + ' bps', sc.avgPnlBps) +
       stat('Total', sc.totalPnlBps == null ? '—' : sc.totalPnlBps + ' bps', sc.totalPnlBps) +
       '</div></div>';
 
-    // Positions
-    html += '<div class="card"><div class="cardLabel">POSITIONS (' + positions.length + ')</div>';
+    html += '<div class="card"><div class="cardLabel">POSITIONS' + suffix + ' (' + positions.length + ')</div>';
     if (positions.length === 0) {
       html += '<div class="kvSmall">flat</div>';
     } else {
@@ -165,17 +151,56 @@
     }
     html += '</div>';
 
-    // Skip reasons
     var skip = meta.skipReasons || {};
     var keys = Object.keys(skip);
-    html += '<div class="card"><div class="cardLabel">SKIP REASONS</div>';
+    html += '<div class="card"><div class="cardLabel">SKIP REASONS' + suffix + '</div>';
     if (keys.length === 0) {
       html += '<div class="kvSmall">—</div>';
     } else {
-      html += keys.sort(function (a, b) { return skip[b] - skip[a]; }).slice(0, 12)
+      html += keys.sort(function (a2, b2) { return skip[b2] - skip[a2]; }).slice(0, 12)
         .map(function (k) { return '<div class="kvSmall">' + esc(k) + ': ' + skip[k] + '</div>'; }).join('');
     }
     html += '</div>';
+    return html;
+  }
+
+  function render(data, error) {
+    // `assets[]` is the multi-engine shape; fall back to a single synthesized
+    // entry so an older single-asset backend still renders.
+    var assets = (data && data.assets) || (data ? [{
+      assetClass: data.assetClass, brokerOk: data.brokerOk,
+      account: data.account, positions: data.positions, meta: data.meta,
+    }] : []);
+    var enabled = data ? data.enabled : false;
+
+    var s = overallStatus(assets, enabled, error);
+    var badge = document.getElementById('badge');
+    badge.textContent = s.label; badge.style.background = s.color;
+
+    var paper = data && data.paper ? 'paper' : (data ? 'LIVE' : '—');
+    document.getElementById('subtle').textContent =
+      dash(data && data.mode) + ' · ' + dash(data && data.assetClass) + ' · ' + paper + ' · v' + dash(data && data.version);
+
+    var errEl = document.getElementById('error');
+    if (error) { errEl.style.display = ''; errEl.textContent = 'backend unreachable: ' + error; }
+    else { errEl.style.display = 'none'; }
+
+    if (!data) { document.getElementById('content').innerHTML = ''; return; }
+
+    var multi = assets.length > 1;
+    // Both engines share one Alpaca account; show equity once (first non-null).
+    var acct = null;
+    for (var i = 0; i < assets.length; i++) { if (assets[i].account) { acct = assets[i].account; break; } }
+    var dayPnl = acct && acct.equity != null && acct.lastEquity != null ? acct.equity - acct.lastEquity : null;
+
+    var html = '<div class="card"><div class="cardLabel">EQUITY</div>' +
+      '<div class="bigNum">' + money(acct && acct.equity) + '</div><div class="row">' +
+      stat('Day P&L', dayPnl == null ? '—' : money(dayPnl), dayPnl) +
+      stat('Cash', money(acct && acct.cash)) +
+      stat('Buying Pwr', money(acct && acct.buyingPower)) +
+      '</div></div>';
+
+    for (var j = 0; j < assets.length; j++) html += assetSection(assets[j], enabled, multi);
 
     document.getElementById('content').innerHTML = html;
   }
