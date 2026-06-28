@@ -1,0 +1,7 @@
+{
+  "name": "moremagic-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-dependency MCP diagnostics server for the MoreMagic backend.",
+  "bin": { "moremagic-mcp": "server.js" }
+}
