@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# MoreMagic pre-commit secret blocker.
+# Refuses commits that contain likely broker keys / API tokens, or any real
+# .env file. Install via: (cd backend && npm run install-git-hooks)
+set -uo pipefail
+
+# Secret-ish patterns: Alpaca paper/live key ids (PK*/AK*), private keys, and
+# assigned API tokens / secrets with a non-empty value.
+PATTERNS='(\b(PK|AK)[A-Z0-9]{16,}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----|(APCA_API_SECRET_KEY|API_TOKEN|APCA_API_KEY_ID)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_\-]{12,})'
+
+fail=0
+files=$(git diff --cached --name-only --diff-filter=ACM)
+for f in $files; do
+  base=$(basename "$f")
+  # Block real env files, but allow the *.example templates.
+  case "$base" in
+    *.example) continue ;;
+    .env|.env.*|*.env) echo "BLOCKED: refusing to commit env file: $f"; fail=1; continue ;;
+  esac
+  # Scan staged content for secrets.
+  if git show ":$f" 2>/dev/null | grep -Eaq "$PATTERNS"; then
+    echo "BLOCKED: potential secret detected in: $f"
+    fail=1
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "pre-commit: secret scan failed. Use environment variables (see .env.example)."
+  echo "If this is a false positive, commit with --no-verify (discouraged)."
+  exit 1
+fi
+exit 0

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "moremagic": {
+      "command": "node",
+      "args": ["mcp/server.js"],
+      "env": {
+        "MM_BACKEND_URL": "https://moremagic-backend.onrender.com",
+        "MM_API_TOKEN": ""
+      }
+    }
+  }
+}
