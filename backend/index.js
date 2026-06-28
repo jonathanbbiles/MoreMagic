@@ -103,11 +103,16 @@ function createApp(ctx) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json());
+  // The dashboard is a public, read-only observability surface (already curl-able
+  // by anyone) and auth — when enabled — is a bearer/x-api-key token, not a
+  // cookie, so CORS is not the access control. Allow any origin unless
+  // DASHBOARD_ORIGINS is explicitly narrowed to a non-wildcard allowlist; this
+  // lets browser viewers (Expo Snack web, etc.) read it without a proxy.
+  const allowAllOrigins = config.dashboardOrigins.length === 0 || config.dashboardOrigins.includes('*');
   app.use(
     cors({
       origin(origin, cb) {
-        // Allow no-origin (curl/health checks) and configured dashboard origins.
-        if (!origin || config.dashboardOrigins.includes(origin)) return cb(null, true);
+        if (!origin || allowAllOrigins || config.dashboardOrigins.includes(origin)) return cb(null, true);
         return cb(null, false);
       },
     }),

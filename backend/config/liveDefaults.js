@@ -104,7 +104,11 @@ const LIVE_DEFAULTS = Object.freeze({
 
   // ---- Auth / CORS -----------------------------------------------------------
   API_TOKEN: '', // optional bearer / x-api-key; empty => auth disabled
-  DASHBOARD_ORIGINS: 'http://localhost:19006,http://localhost:8081',
+  // The dashboard is a public read-only surface; auth (when set) is a header
+  // token, not a cookie, so CORS is not the gate. Default to any origin so
+  // browser viewers (Expo Snack web, etc.) work without a proxy. Narrow this to
+  // a comma-separated allowlist to restrict cross-origin browser reads.
+  DASHBOARD_ORIGINS: '*',
 });
 
 module.exports = { LIVE_DEFAULTS };

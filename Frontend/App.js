@@ -96,7 +96,10 @@ function resolveBackendConfig() {
   const webUrl = readWebOriginFallback();
   const envTok = str(typeof process !== 'undefined' ? process?.env?.EXPO_PUBLIC_API_TOKEN : '');
   const extraTok = str(extra?.apiToken);
-  const baseUrl = envUrl || extraUrl || webUrl || defUrl;
+  // Default (the live backend) wins over the web-origin fallback: when this runs
+  // in a Snack/web preview, window.location.origin is the editor's origin, NOT
+  // the backend — so webUrl must be the last resort, never ahead of defUrl.
+  const baseUrl = envUrl || extraUrl || defUrl || webUrl;
   const apiToken = envTok || extraTok || '';
   return baseUrl ? { baseUrl, apiToken, missing: false } : { baseUrl: null, apiToken, missing: true };
 }
