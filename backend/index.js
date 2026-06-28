@@ -10,6 +10,7 @@
  */
 
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 
@@ -92,6 +93,11 @@ function createApp(ctx) {
     const n = Math.min(Number(req.query.n) || 100, config.logTailSize);
     res.json({ ok: true, ts: Date.now(), logs: logBuffer.tail(n) });
   });
+
+  // Same-origin web dashboard: a dependency-free HTML page that polls /dashboard.
+  // Served from the backend's own origin so there is no CORS and no Expo runtime
+  // (sidesteps the Snack/Expo-web IndexedDB + bundler issues entirely).
+  app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
   app.use((req, res) => res.status(404).json({ ok: false, error: 'not_found' }));
   return app;
