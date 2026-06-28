@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>MoreMagic</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0b0f17; color: #e5e7eb;
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+  .headerRow { display: flex; align-items: center; justify-content: space-between; }
+  .title { color: #f9fafb; font-size: 28px; font-weight: 800; letter-spacing: 0.5px; }
+  .badge { padding: 6px 12px; border-radius: 999px; color: #0b0f17; font-weight: 800; font-size: 12px; }
+  .subtle { color: #9ca3af; margin: 4px 0 8px; }
+  .error { color: #f59e0b; margin: 8px 0; }
+  .card { background: #111827; border: 1px solid #1f2937; border-radius: 14px; padding: 16px; margin-top: 12px; }
+  .cardLabel { color: #9ca3af; font-size: 12px; font-weight: 700; letter-spacing: 1px; margin-bottom: 8px; }
+  .bigNum { color: #f9fafb; font-size: 34px; font-weight: 800; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+  .half { flex: 1; min-width: 220px; }
+  .stat { margin-right: 8px; margin-bottom: 4px; }
+  .statLabel { color: #6b7280; font-size: 11px; }
+  .statValue { font-size: 16px; font-weight: 700; }
+  .kv { font-size: 14px; margin-top: 2px; color: #e5e7eb; }
+  .kvSmall { color: #9ca3af; font-size: 13px; margin-top: 2px; }
+  .posRow { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+            padding: 6px 0; border-top: 1px solid #1f2937; }
+  .posSym { color: #f9fafb; font-size: 15px; font-weight: 700; }
+  .good { color: #22c55e; } .bad { color: #ef4444; } .muted { color: #e5e7eb; }
+  .footer { color: #374151; font-size: 11px; margin: 16px 0 40px; text-align: center; }
+  .footer a { color: #4b5563; }
+  button { background: #1f2937; color: #e5e7eb; border: 1px solid #374151;
+           border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  button:active { background: #374151; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="headerRow">
+    <div class="title">MoreMagic</div>
+    <div id="badge" class="badge" style="background:#6b7280">OFFLINE</div>
+  </div>
+  <div id="subtle" class="subtle">—</div>
+  <div id="error" class="error" style="display:none"></div>
+  <div id="content"></div>
+  <div class="footer">
+    backend: <span id="backend"></span> · <span id="updated">never</span>
+    · <button id="refreshBtn" type="button">refresh</button>
+    · <button id="tokenBtn" type="button">token</button>
+  </div>
+</div>
+
+<script>
+  // Served from the backend's own origin, so /dashboard is same-origin (no CORS).
+  var ORIGIN = window.location.origin;
+  var POLL_MS = 15000;
+  var TOKEN_KEY = 'mm_token';
+
+  // Token: from ?token= (persisted) or localStorage. Only needed if API_TOKEN is set.
+  (function initToken() {
+    try {
+      var q = new URLSearchParams(window.location.search).get('token');
+      if (q) localStorage.setItem(TOKEN_KEY, q);
+    } catch (e) {}
+  })();
+  function getToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; } }
+
+  var dash = function (v, suffix) {
+    if (v === null || v === undefined || (typeof v === 'number' && isNaN(v))) return '—';
+    return String(v) + (suffix || '');
+  };
+  var money = function (v) {
+    if (v === null || v === undefined) return '—';
+    return '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  };
+  var pct = function (v) { return v === null || v === undefined ? '—' : (Number(v) * 100).toFixed(2) + '%'; };
+  var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+  var signClass = function (n) { return n === undefined || n === null ? 'muted' : (n >= 0 ? 'good' : 'bad'); };
+
+  function statusOf(data, error) {
+    if (error || !data) return { label: 'OFFLINE', color: '#6b7280' };
+    if (data.meta && data.meta.safety && data.meta.safety.brakeActive) return { label: 'BLOCKED', color: '#ef4444' };
+    if (data.enabled === false || (data.meta && data.meta.lastScan && data.meta.lastScan.canEnter === false))
+      return { label: 'PAUSED', color: '#f59e0b' };
+    return { label: 'RUNNING', color: '#22c55e' };
+  }
+
+  function stat(label, value, good) {
+    return '<div class="stat"><div class="statLabel">' + esc(label) + '</div>' +
+      '<div class="statValue ' + signClass(good) + '">' + value + '</div></div>';
+  }
+
+  function render(data, error) {
+    var s = statusOf(data, error);
+    var badge = document.getElementById('badge');
+    badge.textContent = s.label; badge.style.background = s.color;
+
+    var paper = data && data.paper ? 'paper' : (data ? 'LIVE' : '—');
+    document.getElementById('subtle').textContent =
+      dash(data && data.mode) + ' · ' + dash(data && data.assetClass) + ' · ' + paper + ' · v' + dash(data && data.version);
+
+    var errEl = document.getElementById('error');
+    if (error) { errEl.style.display = ''; errEl.textContent = 'backend unreachable: ' + error; }
+    else { errEl.style.display = 'none'; }
+
+    if (!data) { document.getElementById('content').innerHTML = ''; return; }
+
+    var acct = data.account || null;
+    var meta = data.meta || {};
+    var sc = meta.scorecard || {};
+    var positions = data.positions || [];
+    var safety = meta.safety || {};
+    var lastScan = meta.lastScan || {};
+    var dayPnl = acct && acct.equity != null && acct.lastEquity != null ? acct.equity - acct.lastEquity : null;
+
+    var html = '';
+
+    // Equity
+    html += '<div class="card"><div class="cardLabel">EQUITY</div>' +
+      '<div class="bigNum">' + money(acct && acct.equity) + '</div><div class="row">' +
+      stat('Day P&L', dayPnl == null ? '—' : money(dayPnl), dayPnl) +
+      stat('Cash', money(acct && acct.cash)) +
+      stat('Buying Pwr', money(acct && acct.buyingPower)) +
+      '</div></div>';
+
+    // Engine + Safety
+    html += '<div class="row">' +
+      '<div class="card half"><div class="cardLabel">ENGINE</div>' +
+      '<div class="kv">Trading: ' + (data.enabled ? 'on' : 'off') + '</div>' +
+      '<div class="kv">Broker: ' + (data.brokerOk ? 'connected' : '—') + '</div>' +
+      '<div class="kv">Market: ' + dash(lastScan.marketReason) + '</div>' +
+      '<div class="kv">Day trades: ' + dash(acct && acct.daytradeCount) + '</div></div>' +
+      '<div class="card half"><div class="cardLabel">SAFETY BRAKE</div>' +
+      '<div class="kv ' + (safety.brakeActive ? 'bad' : 'good') + '">' +
+      (safety.brakeActive ? 'ACTIVE' : 'clear') + '</div>' +
+      (safety.reasons || []).map(function (r) { return '<div class="kvSmall">· ' + esc(r) + '</div>'; }).join('') +
+      '</div></div>';
+
+    // Scorecard
+    html += '<div class="card"><div class="cardLabel">CLOSED-TRADE SCORECARD</div><div class="row">' +
+      stat('Trades', dash(sc.closedTrades)) +
+      stat('Win rate', sc.winRate == null ? '—' : pct(sc.winRate)) +
+      stat('Avg', sc.avgPnlBps == null ? '—' : sc.avgPnlBps + ' bps', sc.avgPnlBps) +
+      stat('Total', sc.totalPnlBps == null ? '—' : sc.totalPnlBps + ' bps', sc.totalPnlBps) +
+      '</div></div>';
+
+    // Positions
+    html += '<div class="card"><div class="cardLabel">POSITIONS (' + positions.length + ')</div>';
+    if (positions.length === 0) {
+      html += '<div class="kvSmall">flat</div>';
+    } else {
+      html += positions.map(function (p) {
+        var upl = p.unrealizedPl;
+        return '<div class="posRow"><div class="posSym">' + esc(p.symbol) + '</div>' +
+          '<div class="kvSmall">' + dash(p.qty) + ' @ ' + money(p.avgEntryPrice) + '</div>' +
+          '<div class="kvSmall ' + ((upl || 0) >= 0 ? 'good' : 'bad') + '">' +
+          (upl == null ? '—' : money(upl)) + ' (' + pct(p.unrealizedPlpc) + ')</div></div>';
+      }).join('');
+    }
+    html += '</div>';
+
+    // Skip reasons
+    var skip = meta.skipReasons || {};
+    var keys = Object.keys(skip);
+    html += '<div class="card"><div class="cardLabel">SKIP REASONS</div>';
+    if (keys.length === 0) {
+      html += '<div class="kvSmall">—</div>';
+    } else {
+      html += keys.sort(function (a, b) { return skip[b] - skip[a]; }).slice(0, 12)
+        .map(function (k) { return '<div class="kvSmall">' + esc(k) + ': ' + skip[k] + '</div>'; }).join('');
+    }
+    html += '</div>';
+
+    document.getElementById('content').innerHTML = html;
+  }
+
+  async function load() {
+    var headers = {};
+    var t = getToken();
+    if (t) { headers['Authorization'] = 'Bearer ' + t; headers['x-api-key'] = t; }
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 8000);
+    try {
+      var res = await fetch(ORIGIN + '/dashboard', { headers: headers, signal: ctrl.signal });
+      if (res.status === 401) throw new Error('401 — set an API token (click "token")');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var data = await res.json();
+      render(data, null);
+      document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      render(null, e.message || 'network error');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  document.getElementById('backend').textContent = ORIGIN;
+  document.getElementById('refreshBtn').addEventListener('click', load);
+  document.getElementById('tokenBtn').addEventListener('click', function () {
+    var cur = getToken();
+    var v = window.prompt('API token (leave blank if auth is disabled):', cur);
+    if (v !== null) { try { localStorage.setItem(TOKEN_KEY, v.trim()); } catch (e) {} load(); }
+  });
+
+  load();
+  setInterval(load, POLL_MS);
+</script>
+</body>
+</html>
