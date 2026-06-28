@@ -1,228 +1,1057 @@
-/**
- * MoreMagic — read-only Expo dashboard.
- * Polls GET /dashboard every ~20s and renders the bot's observational state.
- *
- * Design law: every figure shown is a real /dashboard field. If a field is
- * missing/null we render "—", never a fake 0.
- *
- * Backend URL resolution order:
- *   EXPO_PUBLIC_BACKEND_URL -> app.json expo.extra.backendUrl
- *   -> (web) window.location.origin -> hardcoded Render default.
- */
-import React, { useEffect, useState, useCallback } from 'react';
-import { SafeAreaView, ScrollView, View, Text, StyleSheet, RefreshControl, Platform } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Constants from 'expo-constants';
-import { StatusBar } from 'expo-status-bar';
+import * as Clipboard from 'expo-clipboard';
+import {
+  ActivityIndicator,
+  Animated,
+  AppState,
+  Easing,
+  Platform,
+  Pressable,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
+  Share,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
-const HARDCODED_DEFAULT = 'https://moremagic.onrender.com';
+// ============================================================================
+// MORE MAGIC — single-page console
+// ----------------------------------------------------------------------------
+// One screen. Answers two questions, in order:
+//   1. Running, or does it need me?   → STATUS (top, glanceable)
+//   2. What's it doing?               → the rest (dense, real, no fluff)
+//
+// Aesthetic mirrors Magic Money: engineered minimalism, coastal light, one bold
+// pink accent. Numbers in monospace. Copy is terse. Cards arrive, they don't pop.
+// Law: every figure is a real /dashboard field. Missing = "—". Never a fake 0.
+//
+// MoreMagic is paper-first Alpaca, and can run BOTH equities + crypto at once
+// (ASSET_CLASS=both). The backend exposes `assets[]` — one entry per engine —
+// with the account shared across them. This UI renders the shared money once,
+// then a section per engine.
+//
+// Backend contract: GET /dashboard  (and /debug/logs for the Claude grab)
+//   EXPO_PUBLIC_BACKEND_URL  — base URL (default https://moremagic.onrender.com)
+//   EXPO_PUBLIC_API_TOKEN    — optional bearer token (dashboard is public)
+// ============================================================================
 
-function resolveBackendUrl() {
-  const fromEnv = process.env.EXPO_PUBLIC_BACKEND_URL;
-  if (fromEnv) return fromEnv;
-  const fromExtra = Constants?.expoConfig?.extra?.backendUrl;
-  if (fromExtra) return fromExtra;
-  if (Platform.OS === 'web' && typeof window !== 'undefined') return window.location.origin;
-  return HARDCODED_DEFAULT;
-}
+// Coastal light + confident pink. Green up / red down — pink is brand, not loss.
+const C = {
+  paper:    '#F6F2EA',
+  card:     '#FFFFFF',
+  ink:      '#15131A',
+  ink2:     '#2C2833',
+  sub:      '#69646F',
+  faint:    '#9C97A2',
+  line:     '#E7E0D4',
+  pink:     '#FF2D78',
+  pinkSoft: '#FFE3EE',
+  up:       '#0F9E78',
+  upSoft:   '#DBF1E9',
+  down:     '#E23B40',
+  downSoft: '#FAE0E1',
+  amber:    '#BE8508',
+  amberSoft:'#F6EBCB',
+};
 
-const API_TOKEN = process.env.EXPO_PUBLIC_API_TOKEN || '';
+const T = {
+  font: Platform.OS === 'ios' ? 'System' : 'sans-serif',
+  mono: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  sp: { xxs: 2, xs: 4, sm: 8, md: 12, lg: 16, xl: 22, xxl: 30, huge: 44 },
+  r: { sm: 8, md: 12, lg: 18, xl: 24 },
+};
+
+// ----------------------------------------------------------------------------
+// Backend config.
+// ----------------------------------------------------------------------------
 const POLL_MS = 20000;
+const TICKER_MS = 1000;
+const FETCH_TIMEOUT_MS = 20000;
+const STALE_WARN_MS = 90000;
+const STALE_BAD_MS = 240000;
+const DEFAULT_BACKEND_URL = 'https://moremagic.onrender.com';
 
-const dash = (v, suffix = '') => (v === null || v === undefined || Number.isNaN(v) ? '—' : `${v}${suffix}`);
-const money = (v) => (v === null || v === undefined ? '—' : `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
-const pct = (v) => (v === null || v === undefined ? '—' : `${(Number(v) * 100).toFixed(2)}%`);
+function readExpoExtraConfig() {
+  const a = Constants.expoConfig?.extra;
+  const b = Constants.manifest2?.extra?.expoClient?.extra;
+  const extra = a ?? b;
+  return extra && typeof extra === 'object' ? extra : {};
+}
+const str = (v) => String(v || '').trim();
+function readWebOriginFallback() {
+  if (Platform.OS !== 'web') return '';
+  if (typeof window === 'undefined' || !window?.location?.origin) return '';
+  const o = str(window.location.origin);
+  return /^https?:\/\//i.test(o) ? o : '';
+}
+function resolveBackendConfig() {
+  const extra = readExpoExtraConfig();
+  const envUrl = str(typeof process !== 'undefined' ? process?.env?.EXPO_PUBLIC_BACKEND_URL : '');
+  const extraUrl = str(extra?.backendUrl);
+  const defUrl = str(DEFAULT_BACKEND_URL);
+  const webUrl = readWebOriginFallback();
+  const envTok = str(typeof process !== 'undefined' ? process?.env?.EXPO_PUBLIC_API_TOKEN : '');
+  const extraTok = str(extra?.apiToken);
+  const baseUrl = envUrl || extraUrl || webUrl || defUrl;
+  const apiToken = envTok || extraTok || '';
+  return baseUrl ? { baseUrl, apiToken, missing: false } : { baseUrl: null, apiToken, missing: true };
+}
+const BACKEND = resolveBackendConfig();
+const BASE_URL = BACKEND.baseUrl;
+const API_TOKEN = BACKEND.apiToken;
 
-async function fetchDashboard(url) {
-  const headers = {};
-  if (API_TOKEN) {
-    headers.Authorization = `Bearer ${API_TOKEN}`;
-    headers['x-api-key'] = API_TOKEN;
-  }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function makeHeaders() {
+  const h = { Accept: 'application/json' };
+  if (API_TOKEN) { h.Authorization = `Bearer ${API_TOKEN}`; h['x-api-key'] = API_TOKEN; }
+  return h;
+}
+async function apiFetch(path) {
+  if (!BASE_URL) { const e = new Error('Missing EXPO_PUBLIC_BACKEND_URL'); e.status = 503; throw e; }
+  const url = `${String(BASE_URL).replace(/\/$/, '')}${path}`;
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let res;
   try {
-    const res = await fetch(`${url}/dashboard`, { headers, signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
-  }
+    res = await fetch(url, { headers: makeHeaders(), signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') { const e = new Error(`Timeout after ${Math.round(FETCH_TIMEOUT_MS / 1000)}s`); e.status = 408; throw e; }
+    throw err;
+  } finally { clearTimeout(tid); }
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+  if (!res.ok) { const e = new Error(json?.error || json?.message || text || 'Request failed'); e.status = res.status; throw e; }
+  return json;
 }
-
-function statusOf(data, error) {
-  if (error || !data) return { label: 'OFFLINE', color: '#6b7280' };
-  if (data.meta?.safety?.brakeActive) return { label: 'BLOCKED', color: '#ef4444' };
-  if (data.enabled === false || data.meta?.lastScan?.canEnter === false) return { label: 'PAUSED', color: '#f59e0b' };
-  return { label: 'RUNNING', color: '#22c55e' };
+function isTransient(err) {
+  const sc = Number(err?.status);
+  if ([408, 425, 429, 500, 502, 503, 504].includes(sc)) return true;
+  const m = String(err?.message || '').toLowerCase();
+  return m.includes('timed out') || m.includes('network') || m.includes('failed to fetch');
 }
-
-export default function App() {
-  const [url] = useState(resolveBackendUrl());
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const d = await fetchDashboard(url);
-      setData(d);
-      setError(null);
-    } catch (e) {
-      setError(e.message || 'network error');
+async function fetchWithRetry(path, retries = 0) {
+  let last = null;
+  for (let i = 0; i <= retries; i++) {
+    try { return await apiFetch(path); } catch (err) {
+      last = err;
+      if (i === retries || !isTransient(err)) throw err;
+      await sleep(Math.min(1500 * (i + 1), 5000));
     }
-  }, [url]);
+  }
+  throw last;
+}
+
+// ----------------------------------------------------------------------------
+// Null-safe formatting. num() is the truth guardrail: Number(null)===0, so a
+// naive parse fakes a zero out of every missing field. Map empties → null → "—".
+// ----------------------------------------------------------------------------
+const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+function usd(v, d = 2) { const n = num(v); if (n == null) return '—'; return `$${n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`; }
+function signedUsd(v) { const n = num(v); if (n == null) return '—'; const sgn = n >= 0 ? '+' : '−'; return `${sgn}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
+function pct(v, d = 2) { const n = num(v); if (n == null) return '—'; return `${n >= 0 ? '+' : ''}${n.toFixed(d)}%`; }
+function bps(v) { const n = num(v); if (n == null) return '—'; return `${n >= 0 ? '+' : ''}${n.toFixed(1)}`; }
+function fmtElapsed(ms) {
+  if (ms == null) return '—';
+  const sec = Math.floor(Math.abs(ms) / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h${m % 60 ? ` ${m % 60}m` : ''}`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+function hhmm(tsMs) {
+  const t = num(tsMs);
+  if (t == null) return '—';
+  try { return new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); } catch { return '—'; }
+}
+// MoreMagic's two signals; pretty for the engine strip.
+function prettySignal(v) {
+  const k = String(v || '').toLowerCase();
+  if (!k) return '—';
+  if (k === 'momentum') return 'Momentum';
+  if (k === 'vwap_reversion') return 'VWAP Rev';
+  return String(v);
+}
+// Humanize a skip-reason key, e.g. "no_entry:weekend" → "Weekend",
+// "macd_not_positive" → "MACD not positive".
+function humanizeReason(k) {
+  let v = String(k || '');
+  if (v.includes(':')) v = v.split(':').pop();
+  v = v.replace(/_/g, ' ').trim();
+  if (!v) return '—';
+  const up = v.replace(/\b(macd|rsi|vwap|atr|ema|pdt|eod)\b/gi, (m) => m.toUpperCase());
+  return up.charAt(0).toUpperCase() + up.slice(1);
+}
+const cap = (v) => { const x = String(v || ''); return x ? x.charAt(0).toUpperCase() + x.slice(1) : '—'; };
+function venuePretty(venue, assetClass) {
+  const v = String(venue || '').toLowerCase();
+  if (v === 'alpaca_equities') return 'Alpaca · Equities';
+  if (v === 'alpaca_crypto') return 'Alpaca · Crypto';
+  return assetClass ? `Alpaca · ${cap(assetClass)}` : 'Alpaca';
+}
+const symShort = (x) => String(x || '').replace('/USD', '').replace('USD', '') || '—';
+
+// ----------------------------------------------------------------------------
+// Asset access. `assets[]` is the both-mode shape; synthesize a single entry
+// from the top-level fields for an older single-asset backend.
+// ----------------------------------------------------------------------------
+function getAssets(data) {
+  if (Array.isArray(data?.assets) && data.assets.length) return data.assets;
+  if (!data) return [];
+  return [{
+    assetClass: data.assetClass, venue: data.venue, brokerOk: data.brokerOk,
+    account: data.account, positions: data.positions, meta: data.meta,
+  }];
+}
+// Both engines record the SAME shared account, so any non-empty equity series
+// is the account's history.
+function sharedEquitySeries(assets) {
+  for (const a of assets) {
+    const series = a?.meta?.equityOverTime;
+    if (Array.isArray(series) && series.length) return series;
+  }
+  return [];
+}
+// Change of the equity series over the last `ms`, or null if not enough history.
+function changeOverMs(series, ms) {
+  if (!Array.isArray(series) || series.length < 2) return null;
+  const last = series[series.length - 1];
+  const lastEq = num(last?.equity);
+  const lastTs = num(last?.tsMs);
+  if (lastEq == null || lastTs == null) return null;
+  const cutoff = lastTs - ms;
+  let base = null;
+  for (const p of series) { if (num(p?.tsMs) != null && num(p.tsMs) >= cutoff) { base = p; break; } }
+  if (!base) return null;
+  const baseEq = num(base.equity);
+  if (baseEq == null || num(base.tsMs) === lastTs) return null;
+  const usdD = lastEq - baseEq;
+  return { usd: usdD, pct: baseEq ? (usdD / baseEq) * 100 : null };
+}
+// Aggregate per-engine scorecards into one money headline.
+function aggregateScorecards(assets) {
+  let tradingUsd = 0; let totalBps = 0; let trades = 0; let wins = 0; let any = false;
+  for (const a of assets) {
+    const sc = a?.meta?.scorecard;
+    if (!sc) continue;
+    any = true;
+    tradingUsd += num(sc.totalPnlUsd) || 0;
+    totalBps += num(sc.totalPnlBps) || 0;
+    const ct = num(sc.closedTrades) || 0;
+    trades += ct;
+    if (num(sc.winRate) != null) wins += Math.round(num(sc.winRate) * ct);
+  }
+  return { tradingUsd: any ? tradingUsd : null, totalBps: any ? totalBps : null, trades, winRate: trades > 0 ? wins / trades : null };
+}
+
+// ----------------------------------------------------------------------------
+// Health — the verdict brain. Reduced across engines. Market-closed is HEALTHY
+// (green WAITING), not an alarm; only a brake / halt / broker loss needs you.
+// ----------------------------------------------------------------------------
+function computeHealth({ data, error, ageMs }) {
+  const red = (label, line, act) => ({ level: 'red', label, line, act });
+  const amber = (label, line, act) => ({ level: 'amber', label, line, act });
+  const green = (label, line, act) => ({ level: 'green', label, line, act });
+
+  if (error || !data) return red('OFFLINE', 'Dashboard unreachable.', 'Ping Claude — likely a deploy or network blip.');
+  if (ageMs != null && ageMs > STALE_BAD_MS) return red('SILENT', `No fresh read in ${fmtElapsed(ageMs)}.`, 'Check the Render deploy, or ask Claude.');
+
+  const acct = data.account || {};
+  const raw = acct.raw || {};
+  if (raw.account_blocked || raw.trading_blocked || (acct.status && acct.status !== 'ACTIVE')) {
+    return red('BLOCKED', 'Broker halted the account.', 'Check Alpaca for holds.');
+  }
+
+  const assets = getAssets(data);
+  if (assets.some((a) => a.brokerOk === false)) return red('NO FEED', 'Engine lost broker data.', 'Ping Claude.');
+
+  const braked = assets.find((a) => a.meta?.safety?.brakeActive);
+  if (braked) {
+    const reasons = (braked.meta.safety.reasons || []).join(', ') || 'losing streak';
+    return amber('PAUSED', `${cap(braked.assetClass)} brake on: ${reasons}.`, 'Your call — it re-tests itself.');
+  }
+
+  if (data.enabled === false) return amber('OBSERVING', 'Trading disabled — watching only.', 'Set ENABLE_TRADING=true to arm it.');
+  if (assets.every((a) => !a.meta?.lastScan)) return amber('BOOTING', 'Engine just started.', null);
+
+  if (assets.some((a) => a.meta?.lastScan?.canEnter === true)) {
+    return green('RUNNING', 'Awake, scanning, clear to trade.', null);
+  }
+  const reasons = [...new Set(assets.map((a) => humanizeReason(a.meta?.lastScan?.marketReason)).filter((r) => r !== '—'))].join(' · ');
+  return green('WAITING', `Healthy — holding${reasons ? ` (${reasons.toLowerCase()})` : ''}.`, null);
+}
+const lvlColor = (l) => (l === 'green' ? C.up : l === 'amber' ? C.amber : C.down);
+const lvlSoft = (l) => (l === 'green' ? C.upSoft : l === 'amber' ? C.amberSoft : C.downSoft);
+
+// Per-asset status pill (both mode), same severity ladder, asset-scoped.
+function assetStatus(a, enabled) {
+  if (!a) return { level: 'red', label: 'OFFLINE' };
+  if (a.brokerOk === false) return { level: 'red', label: 'NO FEED' };
+  if (a.meta?.safety?.brakeActive) return { level: 'amber', label: 'PAUSED' };
+  if (enabled === false) return { level: 'amber', label: 'OBSERVING' };
+  if (!a.meta?.lastScan) return { level: 'amber', label: 'BOOTING' };
+  if (a.meta.lastScan.canEnter === true) return { level: 'green', label: 'RUNNING' };
+  return { level: 'green', label: 'WAITING' };
+}
+
+// ----------------------------------------------------------------------------
+// Motion + primitives (carried over verbatim — they're generic).
+// ----------------------------------------------------------------------------
+function useTicker(activeRef) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => { if (!activeRef || activeRef.current) setTick((n) => (n + 1) & 0xffff); }, TICKER_MS);
+    return () => clearInterval(id);
+  }, [activeRef]);
+}
+
+function Reveal({ delay = 0, children, style }) {
+  const a = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(a, { toValue: 1, duration: 460, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [a, delay]);
+  return (
+    <Animated.View style={[style, { opacity: a, transform: [{ translateY: a.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) }] }]}>
+      {children}
+    </Animated.View>
+  );
+}
+
+function Pulse({ color = C.pink, size = 9, on = true }) {
+  const o = useRef(new Animated.Value(0.5)).current;
+  const sc = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!on) { o.setValue(0.45); sc.setValue(1); return undefined; }
+    const loop = Animated.loop(Animated.parallel([
+      Animated.sequence([
+        Animated.timing(o, { toValue: 1, duration: 780, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(o, { toValue: 0.4, duration: 780, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+      Animated.sequence([
+        Animated.timing(sc, { toValue: 1.5, duration: 780, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(sc, { toValue: 1, duration: 780, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [on, o, sc]);
+  return (
+    <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
+      <Animated.View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color, opacity: o, transform: [{ scale: sc }] }} />
+    </View>
+  );
+}
+
+function Card({ children, style, accent }) {
+  return <View style={[s.card, accent ? { borderLeftColor: accent, borderLeftWidth: 3 } : null, style]}>{children}</View>;
+}
+function Label({ children }) { return <Text style={s.label}>{children}</Text>; }
+
+function Row({ k, v, tone, last }) {
+  const color = tone === 'up' ? C.up : tone === 'down' ? C.down : tone === 'pink' ? C.pink : C.ink;
+  return (
+    <View style={[s.specRow, last ? null : s.specRowBorder]}>
+      <Text style={s.specKey}>{k}</Text>
+      <Text style={[s.specVal, { color }]} numberOfLines={1}>{v}</Text>
+    </View>
+  );
+}
+
+function MiniStat({ k, v, tone }) {
+  const color = tone === 'up' ? C.up : tone === 'down' ? C.down : C.ink;
+  return (
+    <View style={s.miniStat}>
+      <Text style={s.miniStatK} numberOfLines={1}>{k}</Text>
+      <Text style={[s.miniStatV, { color }]} numberOfLines={1}>{v}</Text>
+    </View>
+  );
+}
+
+function Meter({ value, color = C.pink, height = 8 }) {
+  const v = value == null ? 0 : Math.max(0, Math.min(1, value));
+  return (
+    <View style={{ height, backgroundColor: C.line, borderRadius: height / 2, overflow: 'hidden' }}>
+      <View style={{ height: '100%', width: `${v * 100}%`, backgroundColor: color, borderRadius: height / 2 }} />
+    </View>
+  );
+}
+
+// Dependency-free spark line (no react-native-svg): a chain of rotated <View>
+// segments. `points` are { y, label } chronological; x spaced evenly.
+function LineChart({ points, height = 120, color = C.up }) {
+  const [w, setW] = useState(0);
+  const onLayout = useCallback((e) => setW(e.nativeEvent.layout.width), []);
+  const pad = 8;
+  const thick = 2.5;
+  const valid = Array.isArray(points) ? points.filter((p) => num(p?.y) != null) : [];
+  if (valid.length < 2) {
+    return (
+      <View onLayout={onLayout} style={{ height, justifyContent: 'center' }}>
+        <Text style={s.note}>Not enough history to chart yet — comes alive as the bot runs.</Text>
+      </View>
+    );
+  }
+  const ys = valid.map((p) => num(p.y));
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const span = maxY - minY || Math.abs(maxY) || 1;
+  const innerH = height - pad * 2;
+  const n = valid.length;
+  const xAt = (i) => (w <= 0 ? 0 : (i / (n - 1)) * (w - pad * 2) + pad);
+  const yAt = (val) => pad + (1 - (val - minY) / span) * innerH;
+
+  const segs = [];
+  const dots = [];
+  if (w > 0) {
+    for (let i = 0; i < n; i++) {
+      const x = xAt(i);
+      const y = yAt(ys[i]);
+      if (i < n - 1) {
+        const x2 = xAt(i + 1);
+        const y2 = yAt(ys[i + 1]);
+        const dx = x2 - x;
+        const dy = y2 - y;
+        const len = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx);
+        segs.push(
+          <View
+            key={`s${i}`}
+            style={{
+              position: 'absolute',
+              left: (x + x2) / 2 - len / 2,
+              top: (y + y2) / 2 - thick / 2,
+              width: len,
+              height: thick,
+              borderRadius: thick / 2,
+              backgroundColor: color,
+              transform: [{ rotate: `${ang}rad` }],
+            }}
+          />,
+        );
+      }
+      const isEnd = i === n - 1;
+      dots.push(
+        <View
+          key={`d${i}`}
+          style={{
+            position: 'absolute',
+            left: x - (isEnd ? 4 : 2.5),
+            top: y - (isEnd ? 4 : 2.5),
+            width: isEnd ? 8 : 5,
+            height: isEnd ? 8 : 5,
+            borderRadius: 4,
+            backgroundColor: isEnd ? color : C.card,
+            borderWidth: isEnd ? 0 : 1.5,
+            borderColor: color,
+          }}
+        />,
+      );
+    }
+  }
+  return (
+    <View onLayout={onLayout} style={{ height }}>
+      {segs}
+      {dots}
+      <View style={s.chartAxis}>
+        <Text style={s.chartTick} numberOfLines={1}>{valid[0].label}</Text>
+        <Text style={[s.chartTick, { textAlign: 'right' }]} numberOfLines={1}>{valid[n - 1].label}</Text>
+      </View>
+    </View>
+  );
+}
+
+function HBar({ value, maxAbs, color }) {
+  const v = num(value);
+  const frac = v == null || !maxAbs ? 0 : Math.min(1, Math.abs(v) / maxAbs);
+  return (
+    <View style={s.hbarTrack}>
+      <View style={[s.hbarFill, { width: `${Math.max(frac * 100, 3)}%`, backgroundColor: color }]} />
+    </View>
+  );
+}
+
+// ============================================================================
+// SECTIONS
+// ============================================================================
+
+function Status({ health }) {
+  const color = lvlColor(health.level);
+  return (
+    <View style={[s.status, { backgroundColor: lvlSoft(health.level) }]}>
+      <View style={s.statusLineRow}>
+        <Pulse color={color} size={8} on={health.level !== 'red'} />
+        <Text style={[s.statusWord, { color }]}>{health.label}</Text>
+        <Text style={s.statusLine} numberOfLines={1}>{health.line}</Text>
+      </View>
+      {health.act ? <Text style={[s.statusActText, { color }]} numberOfLines={1}>↳ {health.act}</Text> : null}
+    </View>
+  );
+}
+
+// MONEY — the headline. Shared Alpaca account; trading P&L aggregated across
+// engines. Day P&L from Alpaca's last_equity (prior close).
+function Money({ data }) {
+  const assets = getAssets(data);
+  const acct = data.account || {};
+  const equity = num(acct.equity);
+  const cash = num(acct.cash) ?? num(acct.buyingPower);
+  const lastEq = num(acct.lastEquity);
+  const dayUsd = equity != null && lastEq != null ? equity - lastEq : null;
+  const dayPct = dayUsd != null && lastEq ? (dayUsd / lastEq) * 100 : null;
+
+  const series = sharedEquitySeries(assets);
+  const startEq = series.length ? num(series[0].equity) : null;
+  const sinceUsd = startEq != null && equity != null ? equity - startEq : null;
+  const sincePct = sinceUsd != null && startEq ? (sinceUsd / startEq) * 100 : null;
+
+  const agg = aggregateScorecards(assets);
+  const dir = dayUsd;
+  const eqTone = dir == null ? C.ink : dir >= 0 ? C.up : C.down;
+  const eqArrow = dir == null ? '' : dir >= 0 ? ' ▲' : ' ▼';
+  return (
+    <Card>
+      <View style={s.equityHead}>
+        <Label>EQUITY</Label>
+        <Text style={[s.equity, { color: eqTone }]} numberOfLines={1}>{usd(equity)}<Text style={s.equityArrow}>{eqArrow}</Text></Text>
+      </View>
+      <View style={s.moneyRow}>
+        <MiniStat k="DAY P&L" v={dayUsd == null ? '—' : `${signedUsd(dayUsd)} ${pct(dayPct)}`} tone={dayUsd == null ? null : dayUsd >= 0 ? 'up' : 'down'} />
+        <MiniStat k="TRADING P&L" v={agg.tradingUsd == null ? '—' : signedUsd(agg.tradingUsd)} tone={agg.tradingUsd == null ? null : agg.tradingUsd >= 0 ? 'up' : 'down'} />
+        <MiniStat k="SINCE START" v={sinceUsd == null ? '—' : pct(sincePct)} tone={sinceUsd == null ? null : sinceUsd >= 0 ? 'up' : 'down'} />
+        <MiniStat k="CASH" v={usd(cash, 0)} />
+      </View>
+      <View style={s.winWrap}>
+        <View style={s.winHead}>
+          <Text style={s.winLabel}>WIN RATE · {agg.trades} closed {agg.trades === 1 ? 'trade' : 'trades'}</Text>
+          <Text style={s.winVal}>{agg.winRate == null ? '—' : `${Math.round(agg.winRate * 100)}%`}</Text>
+        </View>
+        <Meter value={agg.winRate} color={agg.winRate != null && agg.winRate >= 0.5 ? C.up : C.pink} />
+      </View>
+      <Text style={s.tiny}>Day P&L vs the prior close. Trading P&L is realized, deposit-free, summed across engines.</Text>
+    </Card>
+  );
+}
+
+// CHANGE — the shared equity curve from meta.equityOverTime (real {tsMs,equity}).
+function Change({ data }) {
+  const series = sharedEquitySeries(getAssets(data));
+  const curve = series.map((p) => ({ y: num(p.equity), ts: num(p.tsMs), label: hhmm(p.tsMs) }));
+  const first = curve.length ? curve[0].y : null;
+  const last = curve.length ? curve[curve.length - 1].y : null;
+  const up = first != null && last != null ? last >= first : true;
+  const color = up ? C.up : C.down;
+  const sincePct = first != null && last != null && first ? ((last - first) / first) * 100 : null;
+  const chips = [['1H', changeOverMs(series, 3600000)], ['6H', changeOverMs(series, 21600000)], ['24H', changeOverMs(series, 86400000)]];
+  return (
+    <Card>
+      <View style={s.cardHead}>
+        <Label>EQUITY OVER TIME</Label>
+        <Text style={[s.changeHeadVal, { color }]}>{sincePct == null ? '—' : pct(sincePct)}<Text style={s.changeHeadSub}> session</Text></Text>
+      </View>
+      <LineChart points={curve} height={130} color={color} />
+      <View style={s.chipRow}>
+        {chips.map(([clabel, ch]) => {
+          const p = ch ? num(ch.pct) : null;
+          const tone = p == null ? C.faint : p >= 0 ? C.up : C.down;
+          return (
+            <View key={clabel} style={s.chip}>
+              <Text style={s.chipK}>{clabel}</Text>
+              <Text style={[s.chipV, { color: tone }]}>{p == null ? '—' : pct(p)}</Text>
+            </View>
+          );
+        })}
+      </View>
+      <Text style={s.tiny}>Real equity readings (~every loop). Flat early sections = not enough history yet.</Text>
+    </Card>
+  );
+}
+
+// AssetHeader — section divider when more than one engine runs.
+function AssetHeader({ a, enabled }) {
+  const st = assetStatus(a, enabled);
+  const color = lvlColor(st.level);
+  return (
+    <View style={s.assetHeader}>
+      <Text style={s.assetHeaderText}>{String(a.assetClass || '').toUpperCase()}</Text>
+      <View style={[s.assetPill, { backgroundColor: lvlSoft(st.level) }]}>
+        <Pulse color={color} size={6} on={st.level !== 'red'} />
+        <Text style={[s.assetPillText, { color }]}>{st.label}</Text>
+      </View>
+    </View>
+  );
+}
+
+// MARKET — "is it a good time to enter?" from lastScan. Crypto is 24/7; equities
+// closes — and a closed market is a calm fact, not a warning.
+function marketVerdict(a) {
+  const ls = a.meta?.lastScan || {};
+  const reason = String(ls.marketReason || '').toLowerCase();
+  if (a.brokerOk === false) return { emoji: '📡', word: 'No feed', sub: 'Broker data unavailable right now.' };
+  if (reason.includes('weekend') || reason.includes('closed') || reason.includes('holiday') || reason.includes('after_hours') || reason.includes('pre_market')) {
+    return { emoji: '🌙', word: 'Market closed', sub: 'Equities trade 9:30–4 ET on weekdays. Holding for the open.' };
+  }
+  if (ls.canEnter === false) return { emoji: '✋', word: 'Holding fire', sub: 'No setup strong enough right now — that’s normal.' };
+  if (num(ls.candidates) > 0) return { emoji: '🎯', word: 'Lining up', sub: `${ls.candidates} candidate${num(ls.candidates) === 1 ? '' : 's'} clearing the gates.` };
+  return { emoji: '😎', word: 'Good to enter', sub: 'Conditions clear — scanning for a qualifying signal.' };
+}
+function Market({ a }) {
+  const ls = a.meta?.lastScan || {};
+  const sigs = a.meta?.signals || {};
+  const confs = Object.values(sigs).map((sv) => num(sv?.confidence)).filter((c) => c != null);
+  const conf = confs.length ? Math.max(...confs) : null;
+  const v = marketVerdict(a);
+  const accent = v.word === 'Good to enter' || v.word === 'Lining up' ? C.up : v.word === 'No feed' ? C.down : C.amber;
+  return (
+    <Card accent={accent}>
+      <Label>MARKET</Label>
+      <View style={s.verdictRow}>
+        <Text style={s.verdictEmoji}>{v.emoji}</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={s.verdictWord}>{v.word}</Text>
+          <Text style={s.verdictSub} numberOfLines={2}>{v.sub}</Text>
+        </View>
+      </View>
+      <View style={s.factRow}>
+        <View style={s.fact}>
+          <Text style={s.factK}>SESSION</Text>
+          <Text style={s.factV}>{humanizeReason(ls.marketReason)}</Text>
+        </View>
+        <View style={s.fact}>
+          <Text style={s.factK}>BROKER</Text>
+          <Text style={[s.factV, { color: a.brokerOk ? C.up : C.amber }]}>{a.brokerOk ? 'Connected' : '—'}</Text>
+        </View>
+        <View style={s.fact}>
+          <Text style={s.factK}>{conf == null ? 'SCANNED' : 'CONFIDENCE'}</Text>
+          <Text style={s.factV}>{conf == null ? (num(ls.evaluated) == null ? '—' : `${ls.evaluated} sym`) : `${Math.round(conf * 100)}%`}</Text>
+        </View>
+      </View>
+    </Card>
+  );
+}
+
+// ENGINE — one quiet strip: signal · venue · scanned · open positions.
+function Engine({ a }) {
+  const meta = a.meta || {};
+  const signalName = Object.keys(meta.signals || {})[0] || null;
+  const venueLabel = venuePretty(a.venue, a.assetClass);
+  const scanned = num(meta.lastScan?.evaluated);
+  const open = Array.isArray(a.positions) ? a.positions.length : 0;
+  return (
+    <Card style={s.engineCard}>
+      <Text style={s.engineLine} numberOfLines={1}>
+        <Text style={s.engineKey}>ENGINE  </Text>
+        <Text style={s.enginePink}>{prettySignal(signalName)}</Text>
+        <Text style={s.engineDim}>  ·  {venueLabel}  ·  {scanned == null ? '—' : `${scanned} scanned`}  ·  </Text>
+        <Text style={{ color: open > 0 ? C.up : C.sub, fontWeight: '800' }}>{open} open</Text>
+      </Text>
+    </Card>
+  );
+}
+
+// POSITIONS — open positions for this engine (rendered only when non-empty).
+function Positions({ a }) {
+  const pos = Array.isArray(a.positions) ? a.positions : [];
+  if (pos.length === 0) return null;
+  return (
+    <Card>
+      <Label>POSITIONS · {pos.length}</Label>
+      <View style={{ marginTop: T.sp.sm }}>
+        {pos.map((p, i) => {
+          const upl = num(p.unrealizedPl);
+          const uplPct = num(p.unrealizedPlpc) != null ? num(p.unrealizedPlpc) * 100 : null;
+          const tone = upl == null ? C.sub : upl >= 0 ? C.up : C.down;
+          return (
+            <View key={`${p.symbol}${i}`} style={s.posRow}>
+              <Text style={s.posSym}>{symShort(p.symbol)}</Text>
+              <Text style={s.posMid} numberOfLines={1}>{num(p.qty) == null ? '—' : p.qty} @ {usd(p.avgEntryPrice)}</Text>
+              <Text style={[s.posPnl, { color: tone }]} numberOfLines={1}>{upl == null ? '—' : signedUsd(upl)} {uplPct == null ? '' : `(${pct(uplPct)})`}</Text>
+            </View>
+          );
+        })}
+      </View>
+    </Card>
+  );
+}
+
+// SCORECARD — this engine's closed-trade record.
+function Scorecard({ a }) {
+  const sc = a.meta?.scorecard || {};
+  const trades = num(sc.closedTrades) || 0;
+  return (
+    <Card>
+      <Label>SCORECARD</Label>
+      <View style={[s.moneyRow, { marginTop: T.sp.sm }]}>
+        <MiniStat k="TRADES" v={`${trades}`} />
+        <MiniStat k="WIN RATE" v={num(sc.winRate) == null ? '—' : `${Math.round(num(sc.winRate) * 100)}%`} tone={num(sc.winRate) == null ? null : num(sc.winRate) >= 0.5 ? 'up' : null} />
+        <MiniStat k="AVG" v={num(sc.avgPnlBps) == null ? '—' : `${bps(sc.avgPnlBps)} bps`} tone={num(sc.avgPnlBps) == null ? null : num(sc.avgPnlBps) >= 0 ? 'up' : 'down'} />
+        <MiniStat k="TOTAL" v={num(sc.totalPnlBps) == null ? '—' : `${bps(sc.totalPnlBps)} bps`} tone={num(sc.totalPnlBps) == null ? null : num(sc.totalPnlBps) >= 0 ? 'up' : 'down'} />
+      </View>
+    </Card>
+  );
+}
+
+// BRAKE — realized-expectancy circuit breaker. CLEAR is one reassuring line;
+// ENGAGED expands with the reasons + recent average.
+function Brake({ a }) {
+  const safety = a.meta?.safety || {};
+  const sc = a.meta?.scorecard || {};
+  if (!safety.brakeActive) {
+    return (
+      <Card style={s.engineCard}>
+        <Text style={s.brakeLine} numberOfLines={1}>
+          <Text style={s.engineKey}>SAFETY BRAKE  </Text>
+          <Text style={{ color: C.up, fontWeight: '900' }}>🟢 CLEAR  </Text>
+          <Text style={s.engineDim}>auto-halts if trades start bleeding</Text>
+        </Text>
+      </Card>
+    );
+  }
+  const reasons = Array.isArray(safety.reasons) ? safety.reasons : [];
+  return (
+    <Card accent={C.amber}>
+      <View style={s.cardHead}>
+        <Label>SAFETY BRAKE</Label>
+        <Text style={[s.brakeState, { color: C.amber }]}>🛑 ENGAGED</Text>
+      </View>
+      <Row k="Recent avg" v={`${bps(sc.avgPnlBps)} bps`} tone="down" />
+      <Row k="Closed trades" v={num(sc.closedTrades) == null ? '—' : `${sc.closedTrades}`} last={reasons.length === 0} />
+      {reasons.map((r, i) => <Row key={r} k={i === 0 ? 'Reason' : ''} v={humanizeReason(r)} tone="pink" last={i === reasons.length - 1} />)}
+      <Text style={s.note}>Re-tests itself as fresh fills average back above the floor.</Text>
+    </Card>
+  );
+}
+
+// WHY IT'S WAITING — skip-reason histogram as magnitude bars. This is the
+// honest "what's the bot doing" view (MoreMagic exposes no per-symbol edge grid).
+function SkipReasons({ a }) {
+  const skip = a.meta?.skipReasons || {};
+  const entries = Object.entries(skip)
+    .map(([k, v]) => ({ k, v: num(v) || 0 }))
+    .filter((e) => e.v > 0)
+    .sort((x, y) => y.v - x.v)
+    .slice(0, 6);
+  const canEnter = a.meta?.lastScan?.canEnter === true;
+  const title = canEnter ? 'WHY NO ENTRY · count' : 'WHY IT’S WAITING · count';
+  const maxAbs = entries.reduce((m, e) => Math.max(m, e.v), 0) || 1;
+  return (
+    <Card>
+      <Label>{title}</Label>
+      {entries.length === 0 ? (
+        <Text style={s.note}>Nothing skipped yet this session.</Text>
+      ) : (
+        <View style={{ marginTop: T.sp.sm }}>
+          {entries.map((e, i) => (
+            <View key={`${e.k}${i}`} style={s.leadRow}>
+              <Text style={s.skipKey} numberOfLines={1}>{humanizeReason(e.k)}</Text>
+              <View style={s.leadBarWrap}><HBar value={e.v} maxAbs={maxAbs} color={C.pink} /></View>
+              <Text style={s.leadBps}>{e.v}</Text>
+            </View>
+          ))}
+          <Text style={s.tiny}>Why setups were passed over this session. Bigger bar = more often.</Text>
+        </View>
+      )}
+    </Card>
+  );
+}
+
+// AssetBlock — the per-engine stack.
+function AssetBlock({ a, enabled, multi, baseDelay }) {
+  return (
+    <>
+      {multi ? <Reveal delay={baseDelay}><AssetHeader a={a} enabled={enabled} /></Reveal> : null}
+      <Reveal delay={baseDelay + 50}><Market a={a} /></Reveal>
+      <Reveal delay={baseDelay + 100}><Engine a={a} /></Reveal>
+      <Reveal delay={baseDelay + 150}><Scorecard a={a} /></Reveal>
+      <Reveal delay={baseDelay + 200}><Brake a={a} /></Reveal>
+      <Positions a={a} />
+      <Reveal delay={baseDelay + 250}><SkipReasons a={a} /></Reveal>
+    </>
+  );
+}
+
+// FOOTER — freshness, version, one-tap state grab for the Claude workflow.
+function fmtLogTail(entries, max = 40) {
+  if (!Array.isArray(entries) || entries.length === 0) return '(no log entries)';
+  return entries.slice(-max).map((e) => {
+    const t = num(e?.ts);
+    const stamp = t == null ? '--:--:--' : new Date(t).toISOString().slice(11, 19);
+    return `${stamp} ${String(e?.level ?? 'info').toUpperCase()} ${String(e?.message ?? e?.msg ?? '')}`;
+  }).join('\n');
+}
+function Footer({ data, ageMs, health }) {
+  const version = String(data?.version || '').slice(0, 12) || '—';
+  const stale = ageMs != null && ageMs > STALE_WARN_MS;
+  const [copyState, setCopyState] = useState('idle');
+  const onGrab = useCallback(async () => {
+    setCopyState('copying');
+    const acct = data?.account || {};
+    const equity = num(acct.equity);
+    const dayUsd = equity != null && num(acct.lastEquity) != null ? equity - num(acct.lastEquity) : null;
+    const assets = getAssets(data);
+    const agg = aggregateScorecards(assets);
+    const lines = [
+      `More Magic — ${new Date().toISOString()}`,
+      `${health.label}: ${health.line}`,
+      `Equity ${usd(equity)} · day ${signedUsd(dayUsd)} · cash ${usd(acct.cash, 0)}`,
+      `Mode ${data?.mode ?? '—'} · asset ${data?.assetClass ?? '—'} · enabled=${data?.enabled} · paper=${data?.paper}`,
+      `Trading P&L ${signedUsd(agg.tradingUsd)} over ${agg.trades} closed trades · win ${agg.winRate == null ? '—' : `${Math.round(agg.winRate * 100)}%`}`,
+    ];
+    for (const a of assets) {
+      const ls = a.meta?.lastScan || {};
+      const sc = a.meta?.scorecard || {};
+      const sk = Object.entries(a.meta?.skipReasons || {}).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, v]) => `${k}=${v}`).join(', ');
+      lines.push(`[${a.assetClass}] broker=${a.brokerOk} canEnter=${ls.canEnter} reason=${ls.marketReason ?? '—'} open=${(a.positions || []).length} closed=${sc.closedTrades ?? 0} brake=${a.meta?.safety?.brakeActive ? 'ON' : 'clear'}${sk ? ` · top skips: ${sk}` : ''}`);
+    }
+    lines.push(`v${version} · data age ${fmtElapsed(ageMs)}`);
+    const summary = lines.join('\n');
+
+    let logsBlock;
+    try {
+      const logs = await fetchWithRetry('/debug/logs?n=60', 1);
+      logsBlock = fmtLogTail(logs?.logs ?? logs?.entries);
+    } catch (err) {
+      logsBlock = `(logs unavailable: ${String(err?.message || err)})`;
+    }
+    const msg = `${summary}\n\n--- recent logs ---\n${logsBlock}`;
+    try {
+      await Clipboard.setStringAsync(msg);
+      setCopyState('done');
+      setTimeout(() => setCopyState('idle'), 2000);
+    } catch (err) {
+      try { await Share.share({ message: msg }); } catch (_) { /* noop */ }
+      setCopyState('error');
+      setTimeout(() => setCopyState('idle'), 3000);
+    }
+  }, [data, health, version, ageMs]);
+  const grabLabel = copyState === 'copying' ? 'Grabbing…'
+    : copyState === 'done' ? 'Copied ✓'
+    : copyState === 'error' ? 'Copy failed — tap to retry'
+    : 'Grab state → Claude';
+  return (
+    <View style={s.footer}>
+      <Pressable style={s.grab} onPress={onGrab} disabled={copyState === 'copying'}>
+        <Text style={s.grabText}>{grabLabel}</Text>
+      </Pressable>
+      <Text style={[s.foot, stale ? { color: C.amber } : null]}>
+        {stale ? `STALE · ${fmtElapsed(ageMs)}` : `LIVE · ${fmtElapsed(ageMs)}`} · v{version}
+      </Text>
+      <Text style={s.tiny}>Live from the bot. Blanks mean no data — not zero.</Text>
+    </View>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Shell + polling.
+// ----------------------------------------------------------------------------
+export default function App() {
+  return <ErrorBoundary><AppInner /></ErrorBoundary>;
+}
+
+function AppInner() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(null);
+  const [loadedAt, setLoadedAt] = useState(null);
+  const activeRef = useRef(true);
+  useTicker(activeRef);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (n) => { activeRef.current = n === 'active'; });
+    return () => sub.remove();
+  }, []);
+
+  const load = useCallback(async ({ isRefresh = false } = {}) => {
+    if (!BASE_URL) { setLoading(false); setRefreshing(false); setError('Backend URL not configured. Set EXPO_PUBLIC_BACKEND_URL.'); return; }
+    if (isRefresh) setRefreshing(true); else setLoading(true);
+    try {
+      const payload = await fetchWithRetry('/dashboard', isRefresh ? 1 : 3);
+      setData(payload); setLoadedAt(Date.now()); setError(null);
+    } catch (err) {
+      const msg = err?.message || 'Request failed';
+      setError(`${err?.status ? `HTTP ${err.status}` : 'Error'}: ${msg}`);
+    } finally { setLoading(false); setRefreshing(false); }
+  }, []);
 
   useEffect(() => {
     load();
-    const id = setInterval(load, POLL_MS);
+    const id = setInterval(() => { if (activeRef.current) load(); }, POLL_MS);
     return () => clearInterval(id);
   }, [load]);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await load();
-    setRefreshing(false);
-  }, [load]);
+  const onRefresh = useCallback(() => load({ isRefresh: true }), [load]);
+  const ageMs = loadedAt ? Date.now() - loadedAt : null;
+  const health = computeHealth({ data, error, ageMs });
+  const assets = getAssets(data);
+  const multi = assets.length > 1;
 
-  const status = statusOf(data, error);
-  const acct = data?.account || null;
-  const meta = data?.meta || {};
-  const sc = meta.scorecard || {};
-  const positions = data?.positions || [];
-  const dayPnl = acct && acct.equity != null && acct.lastEquity != null ? acct.equity - acct.lastEquity : null;
+  if (loading && !data) {
+    return (
+      <SafeAreaView style={s.root}>
+        <StatusBar barStyle="dark-content" />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <Text style={s.wordmark}>MORE MAGIC</Text>
+          <View style={s.wordRule} />
+          <ActivityIndicator color={C.pink} size="large" style={{ marginTop: T.sp.xl }} />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar style="light" />
+    <SafeAreaView style={s.root}>
+      <StatusBar barStyle="dark-content" backgroundColor={C.paper} />
+      <View style={s.topBar}>
+        <View>
+          <Text style={s.wordmark}>MORE MAGIC</Text>
+          <View style={s.wordRule} />
+        </View>
+        <View style={s.topRight}>
+          <Pulse color={lvlColor(health.level)} size={8} on={!error} />
+          <Text style={[s.topRightText, { color: lvlColor(health.level) }]}>{error ? 'OFFLINE' : 'LIVE'}</Text>
+        </View>
+      </View>
+
       <ScrollView
-        contentContainerStyle={styles.container}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9ca3af" />}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingHorizontal: T.sp.lg, paddingBottom: T.sp.huge }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.pink} colors={[C.pink]} />}
+        showsVerticalScrollIndicator={false}
       >
-        <View style={styles.headerRow}>
-          <Text style={styles.title}>MoreMagic</Text>
-          <View style={[styles.badge, { backgroundColor: status.color }]}>
-            <Text style={styles.badgeText}>{status.label}</Text>
-          </View>
-        </View>
-        <Text style={styles.subtle}>
-          {dash(data?.mode)} · {dash(data?.assetClass)} · {data?.paper ? 'paper' : 'LIVE'} · v{dash(data?.version)}
-        </Text>
-        {error ? <Text style={styles.error}>backend unreachable: {error}</Text> : null}
-
-        {/* Equity */}
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>EQUITY</Text>
-          <Text style={styles.bigNum}>{money(acct?.equity)}</Text>
-          <View style={styles.row}>
-            <Stat label="Day P&L" value={dayPnl == null ? '—' : money(dayPnl)} good={dayPnl} />
-            <Stat label="Cash" value={money(acct?.cash)} />
-            <Stat label="Buying Pwr" value={money(acct?.buyingPower)} />
-          </View>
-        </View>
-
-        {/* Engine + Safety */}
-        <View style={styles.row}>
-          <View style={[styles.card, styles.half]}>
-            <Text style={styles.cardLabel}>ENGINE</Text>
-            <Text style={styles.kv}>Trading: {data?.enabled ? 'on' : 'off'}</Text>
-            <Text style={styles.kv}>Broker: {data?.brokerOk ? 'connected' : '—'}</Text>
-            <Text style={styles.kv}>Market: {dash(meta.lastScan?.marketReason)}</Text>
-            <Text style={styles.kv}>Day trades: {dash(acct?.daytradeCount)}</Text>
-          </View>
-          <View style={[styles.card, styles.half]}>
-            <Text style={styles.cardLabel}>SAFETY BRAKE</Text>
-            <Text style={[styles.kv, { color: meta.safety?.brakeActive ? '#ef4444' : '#22c55e' }]}>
-              {meta.safety?.brakeActive ? 'ACTIVE' : 'clear'}
-            </Text>
-            {(meta.safety?.reasons || []).map((r) => (
-              <Text key={r} style={styles.kvSmall}>· {r}</Text>
+        <Reveal delay={0}><Status health={health} /></Reveal>
+        {data ? (
+          <>
+            <Reveal delay={70}><Money data={data} /></Reveal>
+            <Reveal delay={140}><Change data={data} /></Reveal>
+            {assets.map((a, i) => (
+              <AssetBlock key={a.assetClass || i} a={a} enabled={data.enabled} multi={multi} baseDelay={210 + i * 120} />
             ))}
-          </View>
-        </View>
-
-        {/* Scorecard */}
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>CLOSED-TRADE SCORECARD</Text>
-          <View style={styles.row}>
-            <Stat label="Trades" value={dash(sc.closedTrades)} />
-            <Stat label="Win rate" value={sc.winRate == null ? '—' : pct(sc.winRate)} />
-            <Stat label="Avg" value={sc.avgPnlBps == null ? '—' : `${sc.avgPnlBps} bps`} good={sc.avgPnlBps} />
-            <Stat label="Total" value={sc.totalPnlBps == null ? '—' : `${sc.totalPnlBps} bps`} good={sc.totalPnlBps} />
-          </View>
-        </View>
-
-        {/* Positions */}
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>POSITIONS ({positions.length})</Text>
-          {positions.length === 0 ? (
-            <Text style={styles.kvSmall}>flat</Text>
-          ) : (
-            positions.map((p) => (
-              <View key={p.symbol} style={styles.posRow}>
-                <Text style={styles.posSym}>{p.symbol}</Text>
-                <Text style={styles.kvSmall}>{dash(p.qty)} @ {money(p.avgEntryPrice)}</Text>
-                <Text style={[styles.kvSmall, { color: (p.unrealizedPl || 0) >= 0 ? '#22c55e' : '#ef4444' }]}>
-                  {p.unrealizedPl == null ? '—' : money(p.unrealizedPl)} ({pct(p.unrealizedPlpc)})
-                </Text>
-              </View>
-            ))
-          )}
-        </View>
-
-        {/* Skip reasons */}
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>SKIP REASONS</Text>
-          {Object.keys(meta.skipReasons || {}).length === 0 ? (
-            <Text style={styles.kvSmall}>—</Text>
-          ) : (
-            Object.entries(meta.skipReasons)
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, 12)
-              .map(([k, v]) => (
-                <Text key={k} style={styles.kvSmall}>
-                  {k}: {v}
-                </Text>
-              ))
-          )}
-        </View>
-
-        <Text style={styles.footer}>backend: {url}</Text>
-        <View style={{ height: 40 }} />
+            <Reveal delay={210 + assets.length * 120}><Footer data={data} ageMs={ageMs} health={health} /></Reveal>
+          </>
+        ) : (
+          <Card><Text style={s.note}>{error || 'No data.'}</Text></Card>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function Stat({ label, value, good }) {
-  const color = good === undefined || good === null ? '#e5e7eb' : good >= 0 ? '#22c55e' : '#ef4444';
-  return (
-    <View style={styles.stat}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={[styles.statValue, { color }]}>{value}</Text>
-    </View>
-  );
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('[ErrorBoundary]', error, info?.componentStack); }
+  render() {
+    if (this.state.error) {
+      return (
+        <SafeAreaView style={[s.root, { justifyContent: 'center', alignItems: 'center', padding: T.sp.xl }]}>
+          <StatusBar barStyle="dark-content" />
+          <Text style={s.wordmark}>MORE MAGIC</Text>
+          <Text style={[s.note, { marginTop: T.sp.lg, textAlign: 'center' }]}>{String(this.state.error?.message || this.state.error)}</Text>
+          <Pressable style={[s.grab, { marginTop: T.sp.lg }]} onPress={() => this.setState({ error: null })}>
+            <Text style={s.grabText}>Reset</Text>
+          </Pressable>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#0b0f17' },
-  container: { padding: 16 },
-  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: '#f9fafb', fontSize: 28, fontWeight: '800', letterSpacing: 0.5 },
-  badge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
-  badgeText: { color: '#0b0f17', fontWeight: '800', fontSize: 12 },
-  subtle: { color: '#9ca3af', marginTop: 4, marginBottom: 8 },
-  error: { color: '#f59e0b', marginBottom: 8 },
-  card: { backgroundColor: '#111827', borderRadius: 14, padding: 16, marginTop: 12, borderWidth: 1, borderColor: '#1f2937' },
-  half: { flex: 1 },
-  cardLabel: { color: '#9ca3af', fontSize: 12, fontWeight: '700', letterSpacing: 1, marginBottom: 8 },
-  bigNum: { color: '#f9fafb', fontSize: 34, fontWeight: '800' },
-  row: { flexDirection: 'row', gap: 12, marginTop: 10, flexWrap: 'wrap' },
-  stat: { marginRight: 16, marginBottom: 4 },
-  statLabel: { color: '#6b7280', fontSize: 11 },
-  statValue: { color: '#e5e7eb', fontSize: 16, fontWeight: '700' },
-  kv: { color: '#e5e7eb', fontSize: 14, marginTop: 2 },
-  kvSmall: { color: '#9ca3af', fontSize: 13, marginTop: 2 },
-  posRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6, borderTopWidth: 1, borderTopColor: '#1f2937' },
-  posSym: { color: '#f9fafb', fontSize: 15, fontWeight: '700' },
-  footer: { color: '#374151', fontSize: 11, marginTop: 16, textAlign: 'center' },
+// ----------------------------------------------------------------------------
+// Styles.
+// ----------------------------------------------------------------------------
+const s = StyleSheet.create({
+  root: { flex: 1, backgroundColor: C.paper },
+
+  topBar: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', paddingHorizontal: T.sp.lg, paddingTop: T.sp.sm, paddingBottom: T.sp.md },
+  wordmark: { color: C.ink, fontSize: 19, fontWeight: '900', letterSpacing: 3 },
+  wordRule: { height: 3, width: 34, backgroundColor: C.pink, marginTop: 5, borderRadius: 2 },
+  topRight: { flexDirection: 'row', alignItems: 'center', marginTop: T.sp.xs },
+  topRightText: { marginLeft: T.sp.xs, fontSize: 11, fontWeight: '800', letterSpacing: 1.5 },
+
+  status: { borderRadius: T.r.md, paddingHorizontal: T.sp.md, paddingVertical: T.sp.sm, marginBottom: T.sp.md },
+  statusLineRow: { flexDirection: 'row', alignItems: 'center' },
+  statusWord: { marginLeft: T.sp.sm, fontSize: 14, fontWeight: '900', letterSpacing: 1.5 },
+  statusLine: { color: C.ink2, fontSize: 12.5, marginLeft: T.sp.sm, fontWeight: '500', flex: 1 },
+  statusActText: { fontSize: 12, fontWeight: '700', marginTop: T.sp.xs, marginLeft: T.sp.lg },
+
+  card: { backgroundColor: C.card, borderRadius: T.r.lg, borderWidth: 1, borderColor: C.line, padding: T.sp.lg, marginBottom: T.sp.md },
+  cardHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: T.sp.xs },
+  label: { color: C.faint, fontSize: 11, fontWeight: '800', letterSpacing: 2 },
+
+  equityHead: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: T.sp.md },
+  equity: { fontSize: 26, fontWeight: '800', fontFamily: T.mono, letterSpacing: -0.5 },
+  equityArrow: { fontSize: 16, fontWeight: '900' },
+
+  moneyRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  miniStat: { flex: 1, paddingRight: T.sp.xs },
+  miniStatK: { color: C.faint, fontSize: 8.5, fontWeight: '800', letterSpacing: 0.5 },
+  miniStatV: { color: C.ink, fontSize: 12.5, fontWeight: '700', fontFamily: T.mono, marginTop: 2 },
+
+  chartAxis: { position: 'absolute', left: 0, right: 0, bottom: -2, flexDirection: 'row', justifyContent: 'space-between' },
+  chartTick: { color: C.faint, fontSize: 9, fontWeight: '700', flex: 1 },
+  changeHeadVal: { fontSize: 15, fontWeight: '800', fontFamily: T.mono },
+  changeHeadSub: { color: C.faint, fontSize: 10, fontWeight: '700' },
+  chipRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: T.sp.lg, paddingTop: T.sp.sm, borderTopWidth: 1, borderTopColor: C.line },
+  chip: { alignItems: 'center' },
+  chipK: { color: C.faint, fontSize: 9, fontWeight: '800', letterSpacing: 1 },
+  chipV: { fontSize: 14, fontWeight: '800', fontFamily: T.mono, marginTop: 2 },
+
+  assetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: T.sp.sm, marginBottom: T.sp.sm, paddingHorizontal: T.sp.xs },
+  assetHeaderText: { color: C.ink, fontSize: 13, fontWeight: '900', letterSpacing: 2 },
+  assetPill: { flexDirection: 'row', alignItems: 'center', borderRadius: 999, paddingHorizontal: T.sp.sm, paddingVertical: 3 },
+  assetPillText: { marginLeft: T.sp.xs, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+
+  engineCard: { paddingVertical: T.sp.md },
+  engineLine: { fontSize: 13 },
+  brakeLine: { fontSize: 13 },
+  engineKey: { color: C.faint, fontSize: 11, fontWeight: '800', letterSpacing: 1.5 },
+  enginePink: { color: C.pink, fontWeight: '800', fontFamily: T.mono },
+  engineDim: { color: C.sub, fontFamily: T.mono },
+
+  verdictRow: { flexDirection: 'row', alignItems: 'center', marginTop: T.sp.sm, marginBottom: T.sp.md },
+  verdictEmoji: { fontSize: 34, marginRight: T.sp.md },
+  verdictWord: { color: C.ink, fontSize: 20, fontWeight: '900', letterSpacing: 0.3 },
+  verdictSub: { color: C.sub, fontSize: 12.5, marginTop: 2, lineHeight: 17 },
+  factRow: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: T.sp.sm, borderTopWidth: 1, borderTopColor: C.line },
+  fact: { flex: 1 },
+  factK: { color: C.faint, fontSize: 9, fontWeight: '800', letterSpacing: 1 },
+  factV: { color: C.ink, fontSize: 13, fontWeight: '700', marginTop: 3 },
+
+  winWrap: { marginTop: T.sp.md },
+  winHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: T.sp.xs },
+  winLabel: { color: C.sub, fontSize: 11, fontWeight: '600' },
+  winVal: { color: C.ink, fontSize: 13, fontWeight: '800', fontFamily: T.mono },
+
+  specRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: T.sp.sm },
+  specRowBorder: { borderBottomWidth: 1, borderBottomColor: C.line },
+  specKey: { color: C.sub, fontSize: 14, fontWeight: '500' },
+  specVal: { color: C.ink, fontSize: 15, fontWeight: '700', fontFamily: T.mono },
+
+  brakeState: { fontSize: 13, fontWeight: '900', letterSpacing: 1.5 },
+  note: { color: C.sub, fontSize: 12, lineHeight: 18, marginTop: T.sp.sm },
+  tiny: { color: C.faint, fontSize: 10, lineHeight: 15, marginTop: T.sp.sm },
+
+  posRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: T.sp.xs, borderTopWidth: 1, borderTopColor: C.line },
+  posSym: { color: C.ink, fontSize: 14, fontWeight: '800', width: 60, fontFamily: T.mono },
+  posMid: { color: C.sub, fontSize: 12, flex: 1, fontFamily: T.mono },
+  posPnl: { fontSize: 12.5, fontWeight: '800', fontFamily: T.mono, textAlign: 'right' },
+
+  leadRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: T.sp.xs },
+  skipKey: { color: C.ink, fontSize: 12, fontWeight: '600', width: 120 },
+  leadBarWrap: { flex: 1, marginHorizontal: T.sp.sm },
+  hbarTrack: { height: 9, backgroundColor: C.line, borderRadius: 5, overflow: 'hidden' },
+  hbarFill: { height: '100%', borderRadius: 5 },
+  leadBps: { fontSize: 13, fontWeight: '800', fontFamily: T.mono, width: 40, textAlign: 'right' },
+
+  footer: { alignItems: 'center', marginTop: T.sp.sm },
+  grab: { backgroundColor: C.pink, borderRadius: 999, paddingHorizontal: T.sp.xl, paddingVertical: T.sp.md },
+  grabText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800', letterSpacing: 0.3 },
+  foot: { color: C.sub, fontSize: 11, fontWeight: '800', letterSpacing: 1, marginTop: T.sp.md, fontFamily: T.mono },
 });
