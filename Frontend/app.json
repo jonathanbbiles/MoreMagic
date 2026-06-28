@@ -8,7 +8,7 @@
     "scheme": "moremagic",
     "splash": { "backgroundColor": "#0b0f17" },
     "extra": {
-      "backendUrl": "https://moremagic-backend.onrender.com"
+      "backendUrl": "https://moremagic.onrender.com"
     }
   }
 }
