@@ -80,6 +80,17 @@ const LIVE_DEFAULTS = Object.freeze({
   PDT_MAX_DAY_TRADES: '3', // respected only when equity is below the floor
   PDT_ENFORCE: 'true', // block entries that would breach PDT under the floor
 
+  // ---- Trading costs (fees + spread + slippage) ------------------------------
+  // The single, audited cost model (modules/costs/costModel.js) reads these so
+  // the backtest gate AND the live circuit breaker net trades the SAME way.
+  // Alpaca US equities are commission-free; crypto charges a taker fee. Market
+  // orders are always the taker, so these are taker rates.
+  TAKER_FEE_BPS_EQUITIES: '0', // Alpaca equities: $0 commission
+  TAKER_FEE_BPS_CRYPTO: '25', // Alpaca crypto taker ~0.25% = 25 bps PER SIDE
+  REG_FEE_BPS_SELL: '0.5', // SEC + FINRA TAF + CAT on sells (equities only), approx
+  ASSUMED_SLIPPAGE_BPS: '2', // per-side market-order slippage assumption (bps)
+  ASSUMED_SPREAD_BPS: '3', // modeled spread when a real quote isn't available (bps)
+
   // ---- Safety: per-day loss kill-switch + circuit breaker --------------------
   MAX_DAILY_LOSS_PCT: '0.03', // halt new entries after -3% on the day
   // Realized-expectancy circuit breaker (Magic's most important safety net).
@@ -89,9 +100,12 @@ const LIVE_DEFAULTS = Object.freeze({
   CB_LOOKBACK_TRADES: '20', // window of recent closed trades to evaluate
 
   // ---- Backtest validation gate ----------------------------------------------
-  REQUIRE_BACKTEST_VALIDATION: 'false', // when true, a signal must pass min-expectancy first
-  BACKTEST_MIN_EXPECTANCY_BPS: '5',
-  BACKTEST_MIN_SAMPLES: '30',
+  // The backtester now reports expectancy NET of the cost model, so this floor
+  // is a net-of-fees hurdle (stricter than the old gross number). validateEnv
+  // additionally REQUIRES this be 'true' before it will boot in live mode.
+  REQUIRE_BACKTEST_VALIDATION: 'false', // paper may skip; live must set 'true'
+  BACKTEST_MIN_EXPECTANCY_BPS: '5', // >= +5 bps NET expectancy to pass
+  BACKTEST_MIN_SAMPLES: '50', // need a healthier sample now that costs bite
 
   // ---- Loop / scheduler ------------------------------------------------------
   SCAN_INTERVAL_SEC: '30', // how often the strategy loop runs
@@ -99,7 +113,7 @@ const LIVE_DEFAULTS = Object.freeze({
   PORT: '3000',
 
   // ---- Diagnostics / surface -------------------------------------------------
-  APP_VERSION: '0.1.0',
+  APP_VERSION: '0.2.0',
   LOG_TAIL_SIZE: '300', // /debug/logs ring buffer length
 
   // ---- Auth / CORS -----------------------------------------------------------

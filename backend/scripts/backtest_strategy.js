@@ -56,8 +56,10 @@ async function main() {
   console.log(`\nBacktest: signal=${args.signal} bars=${bars.length} ${args.live ? '(live)' : `(synthetic seed=${args.seed})`}`);
   console.log('  trades        :', result.sample);
   console.log('  win rate      :', result.winRate != null ? (result.winRate * 100).toFixed(1) + '%' : '—');
-  console.log('  expectancy    :', result.expectancyBps != null ? result.expectancyBps + ' bps/trade' : '—');
-  console.log('  total         :', result.totalBps + ' bps');
+  console.log('  round-trip cost:', result.roundTripCostBps + ` bps (${config.assetClass})`);
+  console.log('  expectancy    :', result.expectancyBps != null ? result.expectancyBps + ' bps/trade (NET)' : '—');
+  console.log('    gross       :', result.grossExpectancyBps != null ? result.grossExpectancyBps + ' bps/trade' : '—');
+  console.log('  total         :', result.totalBps + ' bps (NET)');
   console.log('  max drawdown  :', result.maxDrawdownBps + ' bps');
   const pass = passesValidation(result, config);
   console.log(

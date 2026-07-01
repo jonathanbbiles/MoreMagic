@@ -81,10 +81,30 @@ the environment. The most important:
 | `EOD_FLATTEN_ET` / `ENTRY_CUTOFF_ET` | `15:55` / `15:30` | session controls (equities) |
 | `MAX_DAILY_LOSS_PCT` | `0.03` | per-day loss kill-switch |
 | `SCAN_INTERVAL_SEC` | `30` | how often the loop runs |
+| `TAKER_FEE_BPS_CRYPTO` | `25` | crypto taker fee (~0.25%); equities are `0` |
+| `ASSUMED_SLIPPAGE_BPS` / `ASSUMED_SPREAD_BPS` | `2` / `3` | modeled market-order friction |
 | `API_TOKEN` | _(empty)_ | optional Bearer / x-api-key for the dashboard |
 
 Alpaca credentials are **required** and never defaulted: `APCA_API_KEY_ID`,
 `APCA_API_SECRET_KEY`. See `backend/.env.example`.
+
+## Trading costs (fees + spread + slippage)
+
+Every trade is netted through one audited cost model (`modules/costs/costModel.js`)
+so the **backtest gate and the live circuit breaker see the same friction** — never a
+pre-fee number in one place and a net number in the other:
+
+- **Fees** — Alpaca US equities are commission-free (`0`); crypto charges a taker fee
+  (~`0.25%` = `25` bps **per side**, so ~`50` bps round-trip). Market orders are always
+  the taker. Equity **sells** also pay small SEC/TAF/CAT regulatory fees (`REG_FEE_BPS_SELL`).
+- **Spread + slippage** — a market buy lifts the ask and a market sell hits the bid, so a
+  round trip pays roughly one full spread plus per-side slippage. The backtester models
+  these (it no longer assumes a zero spread).
+
+`npm run backtest` reports **gross and net** expectancy plus the round-trip cost, and the
+validation gate passes on **net**. Because crypto's round-trip fee (~50 bps) is large
+next to the `120`/`80` bps targets, a signal that looks profitable gross can be negative
+net — which is exactly why live promotion requires `REQUIRE_BACKTEST_VALIDATION=true`.
 
 ## Safety guardrails
 
@@ -92,8 +112,10 @@ Alpaca credentials are **required** and never defaulted: `APCA_API_KEY_ID`,
   closed trades bleed below an expectancy floor (its own ledger, not `meta`).
 - **Per-day max-loss kill-switch**, **market-hours gate**, **EOD flatten**, **PDT
   day-trade counter** (equities under $25k), **spread + quote-freshness gates**.
-- **Backtest validation gate** — optional min-expectancy-over-samples bar before a signal
-  is allowed to trade.
+- **Backtest validation gate** — a min **net**-expectancy-over-samples bar; `validateEnv`
+  requires it be enabled (`REQUIRE_BACKTEST_VALIDATION=true`) before booting in live mode.
+- **Cost-aware safety** — fees, spread, and slippage are netted into both the backtest and
+  the circuit-breaker ledger via one shared cost model, so profitability isn't overstated.
 - **Config can't drift** — `liveDefaults.test.js` locks safety defaults; `npm run env:audit`
   proves every documented env var is read in code.
 - **No secrets in git** — `.git-hooks/pre-commit` blocks broker keys / tokens / `.env` files.
