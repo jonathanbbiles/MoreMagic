@@ -197,10 +197,32 @@ function validateEnv(env = process.env) {
   if (!Number.isFinite(cfg.cbExpectancyFloorBps)) errors.push('CB_EXPECTANCY_FLOOR_BPS must be a number');
   if (!(Number.isInteger(cfg.cbLookbackTrades) && cfg.cbLookbackTrades >= 1)) errors.push('CB_LOOKBACK_TRADES must be a positive integer');
 
+  // ---- Trading costs (fees + spread + slippage) ------------------------------
+  // Consumed by modules/costs/costModel.js so the backtest gate and the live
+  // circuit breaker net trades identically. Equities are commission-free (0);
+  // crypto carries a taker fee. Market orders are always the taker.
+  cfg.takerFeeBpsEquities = num(env.TAKER_FEE_BPS_EQUITIES);
+  cfg.takerFeeBpsCrypto = num(env.TAKER_FEE_BPS_CRYPTO);
+  cfg.regFeeBpsSell = num(env.REG_FEE_BPS_SELL);
+  cfg.assumedSlippageBps = num(env.ASSUMED_SLIPPAGE_BPS);
+  cfg.assumedSpreadBps = num(env.ASSUMED_SPREAD_BPS);
+  if (!(cfg.takerFeeBpsEquities >= 0 && cfg.takerFeeBpsEquities <= 100)) errors.push('TAKER_FEE_BPS_EQUITIES must be 0..100');
+  if (!(cfg.takerFeeBpsCrypto >= 0 && cfg.takerFeeBpsCrypto <= 200)) errors.push('TAKER_FEE_BPS_CRYPTO must be 0..200');
+  if (!(cfg.regFeeBpsSell >= 0 && cfg.regFeeBpsSell <= 50)) errors.push('REG_FEE_BPS_SELL must be 0..50');
+  if (!(cfg.assumedSlippageBps >= 0 && cfg.assumedSlippageBps <= 200)) errors.push('ASSUMED_SLIPPAGE_BPS must be 0..200');
+  if (!(cfg.assumedSpreadBps >= 0 && cfg.assumedSpreadBps <= 500)) errors.push('ASSUMED_SPREAD_BPS must be 0..500');
+
   // ---- Backtest gate ---------------------------------------------------------
   cfg.requireBacktestValidation = bool(env.REQUIRE_BACKTEST_VALIDATION);
   cfg.backtestMinExpectancyBps = num(env.BACKTEST_MIN_EXPECTANCY_BPS);
   cfg.backtestMinSamples = num(env.BACKTEST_MIN_SAMPLES);
+  if (!Number.isFinite(cfg.backtestMinExpectancyBps)) errors.push('BACKTEST_MIN_EXPECTANCY_BPS must be a number');
+  if (!(Number.isInteger(cfg.backtestMinSamples) && cfg.backtestMinSamples >= 1)) errors.push('BACKTEST_MIN_SAMPLES must be a positive integer');
+  // Live interlock: costs are now modeled, so a deliberate live promotion must
+  // first turn the (net-of-cost) backtest gate on. Mirrors the ALLOW_LIVE gate.
+  if (cfg.tradingMode === 'live' && !cfg.requireBacktestValidation) {
+    errors.push('TRADING_MODE=live requires REQUIRE_BACKTEST_VALIDATION=true (validate net-of-cost expectancy before going live)');
+  }
 
   // ---- Loop ------------------------------------------------------------------
   cfg.scanIntervalSec = num(env.SCAN_INTERVAL_SEC);

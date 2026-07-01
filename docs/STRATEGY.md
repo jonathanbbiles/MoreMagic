@@ -35,7 +35,10 @@ are cancelled after `STALE_ENTRY_TIMEOUT_SEC`.
 
 ## Validating before live
 
-Use `npm run backtest -- <signal>` to grade a signal (synthetic or `--live` bars). The
-optional validation gate (`REQUIRE_BACKTEST_VALIDATION`) requires a minimum expectancy over a
-minimum sample before a signal is allowed to trade. Promote to live only after the **paper**
-closed-trade scorecard is convincingly positive.
+Use `npm run backtest -- <signal>` to grade a signal (synthetic or `--live` bars). Results
+are reported **gross and net** of the cost model (fees + spread + slippage) plus the
+round-trip cost, and the validation gate passes on **net** expectancy. `validateEnv`
+requires `REQUIRE_BACKTEST_VALIDATION=true` before it will boot in live mode. Costs matter:
+crypto's ~50 bps round-trip taker fee can flip a gross-positive edge negative against the
+`120`/`80` bps targets. Promote to live only after the **paper** closed-trade scorecard —
+which is itself netted through the same cost model — is convincingly positive.

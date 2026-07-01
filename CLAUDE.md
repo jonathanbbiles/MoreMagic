@@ -28,7 +28,11 @@ flat by EOD), driven by pure technical signals + a smart scoring layer.
   - `signals/` — `momentumSignal`, `vwapReversionSignal` to the `evaluateXxxSignal` contract.
   - `gates/` — `marketHours` (session/EOD), `pdt`, `microstructure` (spread+freshness).
   - `smart/scoreSetup.js` — composite score + ranking (the "smart" layer).
-  - `safety/circuitBreaker.js` — realized-expectancy breaker (own ledger, not `meta`).
+  - `costs/costModel.js` — single source of truth for trading friction (fees + spread +
+    slippage). Backtester and `trade.js` both net through it, so validation and the live
+    breaker see identical costs.
+  - `safety/circuitBreaker.js` — realized-expectancy breaker (own ledger, not `meta`);
+    fed NET pnl bps.
   - `diagnostics/recorder.js` — observational snapshot for `meta` (never gates).
   - `execution/` — Alpaca client + `alpacaEquities`/`alpacaCrypto` adapters returning
     identical shapes; `selectAdapter()` picks by `EXECUTION_VENUE`.
@@ -59,6 +63,12 @@ the name to `KNOWN_SIGNALS` in `validateEnv.js`.
   stale-entry cancel) — uniform across venues.
 - **Diagnostics iron rule:** `meta` is observational; safety gating lives in the breaker +
   gates, which keep their own inputs.
+- **Costs are modeled, once:** all trade P&L is netted through `costs/costModel.js`
+  (fees + spread + slippage). The backtester nets its expectancy and the circuit-breaker
+  ledger records NET bps, so the validation gate and the live safety net can never diverge
+  on cost. Equities are commission-free; crypto's ~0.25%/side taker fee is the dominant
+  real cost. Follow-up (not yet wired): an exact realized-fee ledger from the Alpaca
+  activities feed — plumbing exists (`normalizeActivity`, `sumFeesUsd`), enforcement is TODO.
 
 ## Changelog
 
@@ -67,3 +77,8 @@ the name to `KNOWN_SIGNALS` in `validateEnv.js`.
   TP/stop/max-hold/EOD + market-hours + PDT gates, pure backtester + diagnostics surface,
   smart scoring layer + realized-expectancy circuit breaker. Full `node --test` suite green;
   `smoke` + `preflight` pass. Paper is the default; live is a single deliberate config change.
+- **0.2.0** — Trading-cost model. New pure `costs/costModel.js` (fees + spread + slippage,
+  venue-aware) nets both the backtester and the circuit-breaker ledger; backtest reports
+  gross + net + round-trip cost and gates on NET expectancy; `validateEnv` requires
+  `REQUIRE_BACKTEST_VALIDATION=true` in live mode; `normalizeOrder` captures real fill
+  data and `normalizeActivity`/`sumFeesUsd` add fee-ledger plumbing. 70 tests green.

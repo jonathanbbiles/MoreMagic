@@ -21,6 +21,7 @@ const { marketState, toEtParts } = require('./modules/gates/marketHours');
 const { pdtGate } = require('./modules/gates/pdt');
 const { microstructureGate } = require('./modules/gates/microstructure');
 const { describeBrokerError } = require('./modules/execution/alpacaClient');
+const { netPnlBps } = require('./modules/costs/costModel');
 
 const round2 = (x) => Math.round(x * 100) / 100;
 
@@ -70,9 +71,14 @@ function createEngine({ adapter, config, diagnostics, circuitBreaker, now = () =
   }
 
   function recordClose(p, meta, plBps, reason) {
-    const trade = { signal: meta.signal, symbol: p.symbol, pnlBps: plBps, pnlUsd: p.unrealizedPl, reason, tsMs: now() };
+    // plBps is the pre-fee mark (Alpaca unrealized_plpc). Net it through the
+    // shared cost model so the circuit breaker's realized-expectancy ledger and
+    // the scorecard reflect fees + spread + slippage — not an optimistic mark.
+    const grossBps = plBps;
+    const netBps = grossBps != null ? netPnlBps(grossBps, { config, spreadBps: config.assumedSpreadBps }) : null;
+    const trade = { signal: meta.signal, symbol: p.symbol, pnlBps: netBps, grossPnlBps: grossBps, pnlUsd: p.unrealizedPl, reason, tsMs: now() };
     diagnostics.recordClosedTrade(trade);
-    if (plBps != null) circuitBreaker.record({ signal: meta.signal, pnlBps: plBps, tsMs: now() });
+    if (netBps != null) circuitBreaker.record({ signal: meta.signal, pnlBps: netBps, tsMs: now() });
   }
 
   async function reconcileExits({ ts, ms, positions, openOrders }) {

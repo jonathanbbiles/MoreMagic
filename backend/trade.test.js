@@ -7,6 +7,7 @@ const { bootstrapLiveEnv } = require('./config/bootstrapLiveEnv');
 const { validateEnv } = require('./config/validateEnv');
 const { createRecorder } = require('./modules/diagnostics/recorder');
 const { createCircuitBreaker } = require('./modules/safety/circuitBreaker');
+const { netPnlBps } = require('./modules/costs/costModel');
 
 const MARKET_OPEN_TS = Date.parse('2025-06-25T18:00:00Z'); // Wed 14:00 ET
 const EOD_TS = Date.parse('2025-06-25T19:57:00Z'); // 15:57 ET -> flatten
@@ -128,8 +129,11 @@ test('reconcileExits takes profit and records the closed trade', async () => {
   assert.strictEqual(r.exits.exits, 1);
   assert.deepStrictEqual(adapter.calls.close, ['AAA']);
   assert.strictEqual(diagnostics.getMeta().scorecard.closedTrades, 1);
-  // +200 bps trade should be healthy for the breaker
-  assert.strictEqual(circuitBreaker.isHalted('momentum', baseConfig()).expectancyBps, 200);
+  // The breaker ledger is now NET of costs, not the +200 bps pre-fee mark.
+  const cfg = baseConfig();
+  const expectedNet = netPnlBps(200, { config: cfg, spreadBps: cfg.assumedSpreadBps });
+  assert.strictEqual(circuitBreaker.isHalted('momentum', cfg).expectancyBps, expectedNet);
+  assert.ok(expectedNet < 200 && expectedNet > 150, 'net expectancy is below the gross mark but still healthy');
 });
 
 test('reconcileExits flattens everything at EOD', async () => {

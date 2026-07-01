@@ -66,11 +66,46 @@ function normalizeOrder(o = {}) {
     qty: num(o.qty),
     notional: num(o.notional),
     filledQty: num(o.filled_qty),
+    // Real fill data — the basis for an exact (not modeled) realized P&L. Alpaca
+    // does not return per-order fees on the order object; those arrive via the
+    // account-activities feed (see normalizeActivity) and are summed there.
+    filledAvgPrice: num(o.filled_avg_price),
+    filledAtMs: toMs(o.filled_at),
     limitPrice: num(o.limit_price),
     status: o.status,
     submittedAtMs: toMs(o.submitted_at) ?? toMs(o.created_at),
     raw: o,
   };
+}
+
+// Alpaca account-activity types that represent a cost paid (net_amount < 0).
+// FEE = generic, CFEE = crypto fee, REG = SEC reg fee, TAF = FINRA TAF.
+const FEE_ACTIVITY_TYPES = Object.freeze(['FEE', 'CFEE', 'REG', 'TAF']);
+
+/**
+ * Normalize one GET /v2/account/activities record (a fill or a fee) into a
+ * canonical shape. This is the plumbing for an EXACT fee ledger: fills carry
+ * price/qty; fee records carry a (negative) net_amount.
+ */
+function normalizeActivity(a = {}) {
+  return {
+    id: a.id ?? null,
+    type: a.activity_type ?? null, // FILL | FEE | CFEE | REG | TAF | ...
+    symbol: a.symbol ?? null,
+    side: a.side ?? null,
+    qty: num(a.qty),
+    price: num(a.price),
+    netAmount: num(a.net_amount), // negative when a cost is paid
+    tsMs: toMs(a.transaction_time) ?? toMs(a.date),
+    raw: a,
+  };
+}
+
+/** Total USD of fees across a list of activity records (returns a positive cost). */
+function sumFeesUsd(activities) {
+  return (Array.isArray(activities) ? activities : [])
+    .filter((a) => FEE_ACTIVITY_TYPES.includes(a && a.activity_type))
+    .reduce((s, a) => s + Math.abs(num(a.net_amount) || 0), 0);
 }
 
 /** Equities latest quote: { quote: { bp, ap, bs, as, t } }. */
@@ -92,6 +127,9 @@ module.exports = {
   normalizeAccount,
   normalizePosition,
   normalizeOrder,
+  normalizeActivity,
+  sumFeesUsd,
+  FEE_ACTIVITY_TYPES,
   normalizeEquityQuote,
   normalizeCryptoQuote,
 };

@@ -11,6 +11,7 @@
 
 const { evaluateSignal } = require('./signals');
 const { scoreSetup } = require('./smart/scoreSetup');
+const { netPnlBps, roundTripCostBps } = require('./costs/costModel');
 
 /** Deterministic PRNG (mulberry32) so synthetic series are reproducible. */
 function mulberry32(seed) {
@@ -73,15 +74,18 @@ function backtestSignal(bars1m, { signalName = 'momentum', config, warmup = 60 }
   for (let i = warmup; i < bars1m.length; i++) {
     const price = bars1m[i].c;
     if (pos) {
-      const plBps = ((price - pos.entryPrice) / pos.entryPrice) * 10000;
+      // TP/SL are GROSS price moves; costs are applied to the realized result.
+      const grossBps = ((price - pos.entryPrice) / pos.entryPrice) * 10000;
       const held = i - pos.entryIdx;
       let reason = null;
-      if (plBps <= -sl) reason = 'stop_loss';
-      else if (plBps >= tp) reason = 'take_profit';
+      if (grossBps <= -sl) reason = 'stop_loss';
+      else if (grossBps >= tp) reason = 'take_profit';
       else if (held >= maxHoldBars) reason = 'max_hold';
       else if (i === bars1m.length - 1) reason = 'eod_flatten';
       if (reason) {
-        trades.push({ entryIdx: pos.entryIdx, exitIdx: i, pnlBps: +plBps.toFixed(2), reason });
+        // Net the trade through the shared cost model (fees + spread + slippage).
+        const net = netPnlBps(grossBps, { config, spreadBps: config.assumedSpreadBps });
+        trades.push({ entryIdx: pos.entryIdx, exitIdx: i, grossPnlBps: +grossBps.toFixed(2), pnlBps: +net.toFixed(2), reason });
         pos = null;
       }
       continue;
@@ -90,15 +94,18 @@ function backtestSignal(bars1m, { signalName = 'momentum', config, warmup = 60 }
     const slice5 = downsample(slice1, 5);
     const res = evaluateSignal(signalName, { symbol: 'BT', bars1m: slice1, bars5m: slice5, config });
     if (!res.ok || res.confidence < config.minConfidence) continue;
-    const scored = scoreSetup({ signal: res, spreadBps: 0, config });
+    // Feed a modeled spread (not 0) so the score sees the same headwind live does.
+    const scored = scoreSetup({ signal: res, spreadBps: config.assumedSpreadBps ?? 0, config });
     if (scored.score < config.minScore) continue;
     pos = { entryIdx: i, entryPrice: price };
   }
 
   const sample = trades.length;
+  // All aggregate stats are NET of costs (t.pnlBps is net); gross is kept for transparency.
   const totalBps = trades.reduce((s, t) => s + t.pnlBps, 0);
+  const grossTotalBps = trades.reduce((s, t) => s + (t.grossPnlBps ?? t.pnlBps), 0);
   const wins = trades.filter((t) => t.pnlBps > 0).length;
-  // running drawdown on cumulative bps
+  // running drawdown on cumulative NET bps
   let peak = 0;
   let cum = 0;
   let maxDd = 0;
@@ -107,17 +114,21 @@ function backtestSignal(bars1m, { signalName = 'momentum', config, warmup = 60 }
     peak = Math.max(peak, cum);
     maxDd = Math.min(maxDd, cum - peak);
   }
+  const roundTripCost = roundTripCostBps({ config, spreadBps: config.assumedSpreadBps });
   return {
     trades,
     sample,
     winRate: sample ? +(wins / sample).toFixed(4) : null,
-    expectancyBps: sample ? +(totalBps / sample).toFixed(2) : null,
-    totalBps: +totalBps.toFixed(2),
+    expectancyBps: sample ? +(totalBps / sample).toFixed(2) : null, // NET expectancy (gates on this)
+    grossExpectancyBps: sample ? +(grossTotalBps / sample).toFixed(2) : null,
+    totalBps: +totalBps.toFixed(2), // NET
+    grossTotalBps: +grossTotalBps.toFixed(2),
+    roundTripCostBps: roundTripCost.totalBps,
     maxDrawdownBps: +maxDd.toFixed(2),
   };
 }
 
-/** The "min-expectancy over enough samples" validation gate. */
+/** The "min NET expectancy over enough samples" validation gate. */
 function passesValidation(result, config) {
   return result.sample >= config.backtestMinSamples && (result.expectancyBps ?? -Infinity) >= config.backtestMinExpectancyBps;
 }

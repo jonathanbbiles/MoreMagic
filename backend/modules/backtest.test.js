@@ -42,7 +42,22 @@ test('backtestSignal returns a structured, deterministic scorecard', () => {
   for (const t of r1.trades) {
     assert.ok(['take_profit', 'stop_loss', 'max_hold', 'eod_flatten'].includes(t.reason));
     assert.ok(t.exitIdx > t.entryIdx);
+    // every trade now carries a gross figure and a net (post-cost) figure
+    assert.ok(Number.isFinite(t.grossPnlBps));
+    assert.ok(t.pnlBps <= t.grossPnlBps + 1e-9, 'net must not exceed gross');
   }
+  assert.ok(r1.roundTripCostBps > 0, 'a round-trip cost is reported');
+});
+
+test('backtest expectancy is net of costs, and crypto costs bite harder than equities', () => {
+  const bars = syntheticBars(1200, { seed: 11 });
+  const eq = backtestSignal(bars, { signalName: 'momentum', config: cfg({ assetClass: 'equities' }) });
+  const cx = backtestSignal(bars, { signalName: 'momentum', config: cfg({ assetClass: 'crypto' }) });
+  if (eq.sample > 0) {
+    assert.ok(eq.expectancyBps <= eq.grossExpectancyBps, 'net <= gross expectancy');
+  }
+  // crypto's round-trip cost (taker fees) must exceed equities' by design
+  assert.ok(cx.roundTripCostBps > eq.roundTripCostBps);
 });
 
 test('passesValidation enforces sample + expectancy floors', () => {

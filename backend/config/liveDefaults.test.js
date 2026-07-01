@@ -22,6 +22,16 @@ test('risk defaults stay within sane bands', () => {
   assert.ok(Number(LIVE_DEFAULTS.MAX_DAILY_LOSS_PCT) > 0 && Number(LIVE_DEFAULTS.MAX_DAILY_LOSS_PCT) <= 0.1);
 });
 
+test('trading-cost defaults are present and sane (crypto taker fee is not silently zeroed)', () => {
+  // Equities are commission-free on Alpaca; crypto is NOT — locking the crypto
+  // taker fee stops a careless edit from hiding the biggest real cost again.
+  assert.strictEqual(LIVE_DEFAULTS.TAKER_FEE_BPS_EQUITIES, '0');
+  assert.ok(Number(LIVE_DEFAULTS.TAKER_FEE_BPS_CRYPTO) >= 15, 'crypto taker fee must reflect ~0.25% (>=15 bps)');
+  assert.ok(Number(LIVE_DEFAULTS.ASSUMED_SLIPPAGE_BPS) >= 0);
+  assert.ok(Number(LIVE_DEFAULTS.ASSUMED_SPREAD_BPS) >= 0);
+  assert.ok(Number(LIVE_DEFAULTS.REG_FEE_BPS_SELL) >= 0);
+});
+
 test('defaults boot + validate cleanly once creds are supplied', () => {
   const env = { APCA_API_KEY_ID: 'PKTEST', APCA_API_SECRET_KEY: 'secret' };
   bootstrapLiveEnv(env);
