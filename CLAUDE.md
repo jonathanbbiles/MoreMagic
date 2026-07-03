@@ -82,3 +82,8 @@ the name to `KNOWN_SIGNALS` in `validateEnv.js`.
   gross + net + round-trip cost and gates on NET expectancy; `validateEnv` requires
   `REQUIRE_BACKTEST_VALIDATION=true` in live mode; `normalizeOrder` captures real fill
   data and `normalizeActivity`/`sumFeesUsd` add fee-ledger plumbing. 70 tests green.
+- **0.3.0** — Backtester realism: intrabar exit fills. New pure `decideBacktestExit`
+  (exported, unit-tested) fills stops/TPs off each bar's high/low — with gap-through-open
+  handling and conservative stop-first priority on whipsaw bars — instead of only checking
+  the close. This stops the backtest from "escaping" a stop that was pierced mid-bar. Pairs
+  with the 0.2.0 cost model so backtest expectancy is honest on both price *and* cost.

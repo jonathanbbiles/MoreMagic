@@ -113,7 +113,7 @@ const LIVE_DEFAULTS = Object.freeze({
   PORT: '3000',
 
   // ---- Diagnostics / surface -------------------------------------------------
-  APP_VERSION: '0.2.0',
+  APP_VERSION: '0.3.0',
   LOG_TAIL_SIZE: '300', // /debug/logs ring buffer length
 
   // ---- Auth / CORS -----------------------------------------------------------
