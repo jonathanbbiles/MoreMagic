@@ -61,31 +61,53 @@ function downsample(bars, factor) {
 }
 
 /**
+ * Pure intrabar exit decision. Priority: gap-through-the-open > stop (assumed to
+ * print first within a bar — conservative) > take-profit > max-hold > EOD. Returns
+ * the exit reason AND the realized fill price, or null to keep holding. Using the
+ * bar high/low (not just the close) stops the backtester from optimistically
+ * "escaping" a stop that was pierced mid-bar.
+ * @returns {{ reason:string, fill:number }|null}
+ */
+function decideBacktestExit({ bar, entryPrice, heldBars, isLastBar, config }) {
+  const stopPrice = entryPrice * (1 - config.stopLossBps / 10000);
+  const tpPrice = entryPrice * (1 + config.takeProfitBps / 10000);
+  // Gap: the bar OPENS beyond a level — you cannot fill better than the open.
+  if (bar.o <= stopPrice) return { reason: 'stop_loss', fill: bar.o };
+  if (bar.o >= tpPrice) return { reason: 'take_profit', fill: bar.o };
+  // Intrabar touch: assume the adverse (stop) prints first — conservative.
+  if (bar.l <= stopPrice) return { reason: 'stop_loss', fill: stopPrice };
+  if (bar.h >= tpPrice) return { reason: 'take_profit', fill: tpPrice };
+  if (heldBars >= config.maxHoldMinutes) return { reason: 'max_hold', fill: bar.c };
+  if (isLastBar) return { reason: 'eod_flatten', fill: bar.c };
+  return null;
+}
+
+/**
  * Run a single-position backtest of one signal over a 1m series.
  * @returns {{ trades:Array, sample:number, winRate:number|null, expectancyBps:number|null, totalBps:number, maxDrawdownBps:number }}
  */
 function backtestSignal(bars1m, { signalName = 'momentum', config, warmup = 60 } = {}) {
   const trades = [];
   let pos = null; // { entryIdx, entryPrice }
-  const tp = config.takeProfitBps;
-  const sl = config.stopLossBps;
-  const maxHoldBars = config.maxHoldMinutes; // 1m bars
 
   for (let i = warmup; i < bars1m.length; i++) {
     const price = bars1m[i].c;
     if (pos) {
-      // TP/SL are GROSS price moves; costs are applied to the realized result.
-      const grossBps = ((price - pos.entryPrice) / pos.entryPrice) * 10000;
-      const held = i - pos.entryIdx;
-      let reason = null;
-      if (grossBps <= -sl) reason = 'stop_loss';
-      else if (grossBps >= tp) reason = 'take_profit';
-      else if (held >= maxHoldBars) reason = 'max_hold';
-      else if (i === bars1m.length - 1) reason = 'eod_flatten';
-      if (reason) {
-        // Net the trade through the shared cost model (fees + spread + slippage).
+      // Intrabar fill: honor the bar's high/low (and a gap on the open), not just
+      // the close, so a pierced stop exits at the stop — not optimistically at the
+      // close. Costs are then applied to that realized fill.
+      const bar = bars1m[i];
+      const ex = decideBacktestExit({
+        bar,
+        entryPrice: pos.entryPrice,
+        heldBars: i - pos.entryIdx,
+        isLastBar: i === bars1m.length - 1,
+        config,
+      });
+      if (ex) {
+        const grossBps = ((ex.fill - pos.entryPrice) / pos.entryPrice) * 10000;
         const net = netPnlBps(grossBps, { config, spreadBps: config.assumedSpreadBps });
-        trades.push({ entryIdx: pos.entryIdx, exitIdx: i, grossPnlBps: +grossBps.toFixed(2), pnlBps: +net.toFixed(2), reason });
+        trades.push({ entryIdx: pos.entryIdx, exitIdx: i, grossPnlBps: +grossBps.toFixed(2), pnlBps: +net.toFixed(2), reason: ex.reason });
         pos = null;
       }
       continue;
@@ -133,4 +155,4 @@ function passesValidation(result, config) {
   return result.sample >= config.backtestMinSamples && (result.expectancyBps ?? -Infinity) >= config.backtestMinExpectancyBps;
 }
 
-module.exports = { backtestSignal, syntheticBars, downsample, mulberry32, passesValidation };
+module.exports = { backtestSignal, decideBacktestExit, syntheticBars, downsample, mulberry32, passesValidation };

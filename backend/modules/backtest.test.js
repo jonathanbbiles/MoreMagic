@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { backtestSignal, syntheticBars, passesValidation, downsample } = require('./backtest');
+const { backtestSignal, decideBacktestExit, syntheticBars, passesValidation, downsample } = require('./backtest');
 const { bootstrapLiveEnv } = require('../config/bootstrapLiveEnv');
 const { validateEnv } = require('../config/validateEnv');
 
@@ -65,4 +65,57 @@ test('passesValidation enforces sample + expectancy floors', () => {
   assert.strictEqual(passesValidation({ sample: 10, expectancyBps: 8 }, c), true);
   assert.strictEqual(passesValidation({ sample: 3, expectancyBps: 100 }, c), false);
   assert.strictEqual(passesValidation({ sample: 50, expectancyBps: -1 }, c), false);
+});
+
+
+test('decideBacktestExit fills stops/TPs intrabar off the high/low, not the close', () => {
+  const c = cfg(); // stopLossBps 80 (-> 99.2), takeProfitBps 120 (-> 101.2) at entry 100
+  const base = { entryPrice: 100, heldBars: 1, isLastBar: false, config: c };
+
+  // low pierces the stop even though the bar CLOSES green -> must stop out at the stop
+  assert.deepStrictEqual(
+    decideBacktestExit({ ...base, bar: { o: 100, h: 100.5, l: 99.0, c: 100.3 } }),
+    { reason: 'stop_loss', fill: 100 * (1 - 80 / 10000) },
+  );
+  // high pierces the take-profit -> fill at the TP level
+  assert.deepStrictEqual(
+    decideBacktestExit({ ...base, bar: { o: 100, h: 101.5, l: 99.9, c: 100.1 } }),
+    { reason: 'take_profit', fill: 100 * (1 + 120 / 10000) },
+  );
+});
+
+test('decideBacktestExit fills at the OPEN when the bar gaps through a level', () => {
+  const c = cfg();
+  const base = { entryPrice: 100, heldBars: 1, isLastBar: false, config: c };
+  // gap down through the stop: fill at the open (worse than the stop) — realistic
+  assert.deepStrictEqual(
+    decideBacktestExit({ ...base, bar: { o: 98.5, h: 99, l: 98, c: 98.8 } }),
+    { reason: 'stop_loss', fill: 98.5 },
+  );
+  // gap up through the TP: fill at the open (better than the TP)
+  assert.deepStrictEqual(
+    decideBacktestExit({ ...base, bar: { o: 102, h: 102.5, l: 101.8, c: 102.2 } }),
+    { reason: 'take_profit', fill: 102 },
+  );
+});
+
+test('decideBacktestExit assumes the stop prints first on a whipsaw bar (conservative)', () => {
+  const c = cfg();
+  // one bar touches BOTH the stop and the TP -> stop wins
+  const ex = decideBacktestExit({ entryPrice: 100, heldBars: 1, isLastBar: false, config: c, bar: { o: 100, h: 101.5, l: 99.0, c: 100 } });
+  assert.strictEqual(ex.reason, 'stop_loss');
+});
+
+test('decideBacktestExit holds, then max-hold / EOD fill at the close', () => {
+  const c = cfg();
+  const quiet = { o: 100, h: 100.8, l: 99.5, c: 100.2 }; // touches neither level
+  assert.strictEqual(decideBacktestExit({ entryPrice: 100, heldBars: 5, isLastBar: false, config: c, bar: quiet }), null);
+  assert.deepStrictEqual(
+    decideBacktestExit({ entryPrice: 100, heldBars: c.maxHoldMinutes, isLastBar: false, config: c, bar: quiet }),
+    { reason: 'max_hold', fill: 100.2 },
+  );
+  assert.deepStrictEqual(
+    decideBacktestExit({ entryPrice: 100, heldBars: 5, isLastBar: true, config: c, bar: quiet }),
+    { reason: 'eod_flatten', fill: 100.2 },
+  );
 });
