@@ -150,6 +150,8 @@ function validateEnv(env = process.env) {
   if (!(cfg.minConfidence >= 0 && cfg.minConfidence <= 1)) errors.push('MIN_CONFIDENCE must be 0..1');
   cfg.minScore = num(env.MIN_SCORE);
   if (!(cfg.minScore >= 0 && cfg.minScore <= 1)) errors.push('MIN_SCORE must be 0..1');
+  cfg.minNetEdgeBps = num(env.MIN_NET_EDGE_BPS);
+  if (!Number.isFinite(cfg.minNetEdgeBps)) errors.push('MIN_NET_EDGE_BPS must be a number');
 
   // ---- Signals ---------------------------------------------------------------
   const KNOWN_SIGNALS = ['momentum', 'vwap_reversion'];

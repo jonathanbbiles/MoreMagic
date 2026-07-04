@@ -70,6 +70,9 @@ const LIVE_DEFAULTS = Object.freeze({
   MAX_QUOTE_AGE_MS: '8000', // reject stale quotes older than this
   MIN_CONFIDENCE: '0.45', // signal confidence floor (0..1) before we consider it
   MIN_SCORE: '0.40', // smart-layer composite score floor to actually enter
+  // Cost-aware entry hurdle: a setup's projected move must beat its modeled
+  // round-trip cost (fees+spread+slippage) by at least this many bps to enter.
+  MIN_NET_EDGE_BPS: '5', // >= +5 bps projected AFTER costs, else skip 'below_cost_hurdle'
 
   // ---- Signals --------------------------------------------------------------
   // Comma-separated active signals evaluated each scan; the best ok+scored wins.
@@ -131,7 +134,7 @@ const LIVE_DEFAULTS = Object.freeze({
   PORT: '3000',
 
   // ---- Diagnostics / surface -------------------------------------------------
-  APP_VERSION: '0.3.2',
+  APP_VERSION: '0.4.0',
   LOG_TAIL_SIZE: '300', // /debug/logs ring buffer length
 
   // ---- Auth / CORS -----------------------------------------------------------

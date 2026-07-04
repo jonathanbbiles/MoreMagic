@@ -239,3 +239,20 @@ test('circuit breaker halts new entries for a bleeding signal', async () => {
   assert.strictEqual(r.entries.entered, 0);
   assert.strictEqual(adapter.calls.submit.length, 0);
 });
+
+test('runOnce skips a setup that cannot clear its round-trip cost (cost-edge gate)', async () => {
+  const adapter = mockAdapter();
+  const diagnostics = createRecorder();
+  const engine = createEngine({
+    adapter,
+    config: baseConfig({ minNetEdgeBps: 100000 }), // impossible hurdle -> must skip
+    diagnostics,
+    circuitBreaker: createCircuitBreaker(),
+    now: () => MARKET_OPEN_TS,
+  });
+  const r = await engine.runOnce();
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.entries.entered, 0);
+  assert.strictEqual(adapter.calls.submit.length, 0);
+  assert.ok((diagnostics.getMeta().skipReasons.below_cost_hurdle || 0) >= 1, 'skipped on the cost hurdle');
+});

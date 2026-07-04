@@ -27,6 +27,7 @@ flat by EOD), driven by pure technical signals + a smart scoring layer.
   - `indicators/` — EMA/RSI/MACD/VWAP/ATR (pure).
   - `signals/` — `momentumSignal`, `vwapReversionSignal` to the `evaluateXxxSignal` contract.
   - `gates/` — `marketHours` (session/EOD), `pdt`, `microstructure` (spread+freshness).
+  - `gates/costEdge.js` — cost-aware entry gate: projected move must beat modeled round-trip cost.
   - `smart/scoreSetup.js` — composite score + ranking (the "smart" layer).
   - `costs/costModel.js` — single source of truth for trading friction (fees + spread +
     slippage). Backtester and `trade.js` both net through it, so validation and the live
@@ -107,3 +108,10 @@ the name to `KNOWN_SIGNALS` in `validateEnv.js`.
   A wider universe widens opportunity, not exposure: the smart layer still enters only
   `MAX_OPEN_POSITIONS` and every gate/breaker is unchanged per symbol. Universe size is
   surfaced observationally at `meta.universe`. `configured` mode restores the old behaviour.
+- **0.4.0** — Cost-aware entry gate. New pure, exported `gates/costEdge.js` pushes the
+  cost model into the LIVE entry decision (previously costs only shaped the backtest and
+  the breaker ledger, never the live gate). A setup's `projectedBps` must beat its modeled
+  round-trip cost — using the REAL quoted spread — by `MIN_NET_EDGE_BPS` (default 5) or it
+  is skipped as `below_cost_hurdle`. Directly counters the 0.3.2 floor-loosening + whole-
+  market crypto + ~50 bps crypto taker fees, which otherwise let the loop enter setups that
+  were net-negative before they started.

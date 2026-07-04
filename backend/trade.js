@@ -20,6 +20,7 @@ const { scoreSetup, rankCandidates } = require('./modules/smart/scoreSetup');
 const { marketState, toEtParts } = require('./modules/gates/marketHours');
 const { pdtGate } = require('./modules/gates/pdt');
 const { microstructureGate } = require('./modules/gates/microstructure');
+const { costEdgeGate } = require('./modules/gates/costEdge');
 const { describeBrokerError } = require('./modules/execution/alpacaClient');
 const { netPnlBps } = require('./modules/costs/costModel');
 
@@ -248,6 +249,14 @@ function createEngine({ adapter, config, diagnostics, circuitBreaker, now = () =
         }
         if (res.confidence < config.minConfidence) {
           skip('below_min_confidence');
+          continue;
+        }
+        // Cost-aware gate: the projected move must clear the modeled round-trip
+        // cost (fees + real spread + slippage). Keeps loosened floors / wide crypto
+        // books from admitting setups that are net-negative before they start.
+        const edge = costEdgeGate({ projectedBps: res.projectedBps, spreadBps: micro.spreadBps || 0, config });
+        if (!edge.ok) {
+          skip('below_cost_hurdle');
           continue;
         }
         const scored = scoreSetup({ signal: res, spreadBps: micro.spreadBps || 0, config });
