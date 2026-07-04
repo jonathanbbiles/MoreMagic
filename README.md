@@ -76,7 +76,9 @@ the environment. The most important:
 | `CRYPTO_UNIVERSE` | `BTC/USD,ETH/USD,LTC/USD` | pairs scanned in `configured` mode / the `all`-mode fallback |
 | `CRYPTO_UNIVERSE_MODE` | `all` | `all` scans every tradable USD pair Alpaca lists; `configured` scans only `CRYPTO_UNIVERSE` |
 | `CRYPTO_UNIVERSE_REFRESH_SEC` | `3600` | how often the `all` universe is re-discovered from `/v2/assets` |
-| `ACTIVE_SIGNALS` | `momentum` | `momentum`, `vwap_reversion`, or a comma list |
+| `ACTIVE_SIGNALS` | `momentum,vwap_reversion` | `momentum`, `vwap_reversion`, or a comma list |
+| `MAX_SPREAD_BPS` | `45` | reject entries wider than this bid/ask spread (bps) |
+| `MIN_CONFIDENCE` / `MIN_SCORE` | `0.45` / `0.40` | signal-confidence + smart-score floors to enter |
 | `POSITION_SIZING_PCT` | `0.10` | fraction of equity per entry, clamped to cash |
 | `MAX_OPEN_POSITIONS` | `4` | the smart layer keeps only the best few setups |
 | `TAKE_PROFIT_BPS` / `STOP_LOSS_BPS` | `120` / `80` | exit targets (basis points) |

@@ -1,6 +1,6 @@
 {
   "name": "moremagic-backend",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Smart Day Trader backend — intraday equities/crypto trading engine on Alpaca (paper-first).",
   "type": "commonjs",
