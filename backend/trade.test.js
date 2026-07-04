@@ -169,6 +169,66 @@ test('runOnce degrades gracefully when the broker is unreachable', async () => {
   assert.strictEqual(diagnostics.getMeta().safety.brakeActive, true);
 });
 
+test('crypto mode=all scans the discovered universe, not the configured 3', async () => {
+  const listed = ['AAA/USD', 'BBB/USD', 'CCC/USD', 'DDD/USD', 'EEE/USD'];
+  let listCalls = 0;
+  const adapter = mockAdapter({
+    async listAssets() {
+      listCalls++;
+      return listed;
+    },
+  });
+  const cfg = baseConfig({
+    assetClass: 'crypto',
+    cryptoUniverseMode: 'all',
+    cryptoUniverseRefreshSec: 3600,
+    universe: ['AAA/USD'], // configured fallback (would be the only symbol without discovery)
+    maxOpenPositions: 2,
+  });
+  const engine = createEngine({ adapter, config: cfg, diagnostics: createRecorder(), circuitBreaker: createCircuitBreaker(), now: () => MARKET_OPEN_TS });
+  const r = await engine.runOnce();
+  assert.strictEqual(r.ok, true);
+  // Every discovered symbol was evaluated (not just the single configured one).
+  assert.strictEqual(r.entries.evaluated, listed.length);
+  assert.strictEqual(listCalls, 1);
+});
+
+test('crypto mode=all falls back to configured universe when discovery fails', async () => {
+  const adapter = mockAdapter({
+    async listAssets() {
+      throw new Error('assets endpoint 503');
+    },
+  });
+  const cfg = baseConfig({
+    assetClass: 'crypto',
+    cryptoUniverseMode: 'all',
+    cryptoUniverseRefreshSec: 3600,
+    universe: ['AAA/USD', 'BBB/USD'],
+  });
+  const diagnostics = createRecorder();
+  const engine = createEngine({ adapter, config: cfg, diagnostics, circuitBreaker: createCircuitBreaker(), now: () => MARKET_OPEN_TS });
+  const r = await engine.runOnce();
+  assert.strictEqual(r.ok, true);
+  // Discovery failed -> scan the configured fallback, and the loop still runs.
+  assert.strictEqual(r.entries.evaluated, 2);
+  assert.ok(diagnostics.getMeta().skipReasons.universe_discovery_error >= 1);
+});
+
+test('crypto discovery is cached within the refresh TTL (one listAssets per window)', async () => {
+  let listCalls = 0;
+  const adapter = mockAdapter({
+    async listAssets() {
+      listCalls++;
+      return ['AAA/USD', 'BBB/USD'];
+    },
+  });
+  const cfg = baseConfig({ assetClass: 'crypto', cryptoUniverseMode: 'all', cryptoUniverseRefreshSec: 3600, universe: ['AAA/USD'] });
+  const engine = createEngine({ adapter, config: cfg, diagnostics: createRecorder(), circuitBreaker: createCircuitBreaker(), now: () => MARKET_OPEN_TS });
+  await engine.runOnce();
+  await engine.runOnce(); // second loop within the TTL -> served from cache
+  assert.strictEqual(listCalls, 1);
+});
+
 test('circuit breaker halts new entries for a bleeding signal', async () => {
   const adapter = mockAdapter();
   const circuitBreaker = createCircuitBreaker();

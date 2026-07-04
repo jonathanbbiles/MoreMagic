@@ -75,6 +75,24 @@ test('crypto adapter: bars keyed by symbol + gtc tif', async () => {
   assert.strictEqual(post.body.notional, '100');
 });
 
+test('crypto adapter: listAssets returns sorted tradable USD pairs only', async () => {
+  const client = mockClient({
+    'GET /v2/assets': [
+      { symbol: 'ETH/USD', tradable: true, status: 'active', class: 'crypto' },
+      { symbol: 'BTC/USD', tradable: true, status: 'active', class: 'crypto' },
+      { symbol: 'DOGE/USD', tradable: true, status: 'active', class: 'crypto' },
+      { symbol: 'SHIB/USDT', tradable: true, status: 'active', class: 'crypto' }, // non-USD leg -> dropped
+      { symbol: 'AAVE/USD', tradable: false, status: 'active', class: 'crypto' }, // not tradable -> dropped
+    ],
+  });
+  const a = selectAdapter(cxConfig, client);
+  const syms = await a.listAssets();
+  assert.deepStrictEqual(syms, ['BTC/USD', 'DOGE/USD', 'ETH/USD']);
+  const get = client.calls.find((c) => c.method === 'get' && c.url === '/v2/assets');
+  assert.strictEqual(get.opts.params.asset_class, 'crypto');
+  assert.strictEqual(get.opts.params.status, 'active');
+});
+
 test('selectAdapter rejects unknown venue', () => {
   assert.throws(() => selectAdapter({ executionVenue: 'nasdaq_direct' }, mockClient()), /Unsupported EXECUTION_VENUE/);
 });

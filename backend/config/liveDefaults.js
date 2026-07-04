@@ -41,6 +41,17 @@ const LIVE_DEFAULTS = Object.freeze({
   // Crypto universe is used instead when ASSET_CLASS=crypto.
   EQUITIES_UNIVERSE: 'SPY,QQQ,AAPL,MSFT,NVDA,AMD,TSLA,META,AMZN,GOOGL',
   CRYPTO_UNIVERSE: 'BTC/USD,ETH/USD,LTC/USD',
+  // How the crypto scan builds its universe:
+  //  - 'configured' (default): scan exactly CRYPTO_UNIVERSE above.
+  //  - 'all': discover EVERY tradable USD-quoted crypto pair from Alpaca's
+  //    /v2/assets feed at boot (refreshed on a TTL) and scan all of them. The
+  //    smart layer still ranks and only enters MAX_OPEN_POSITIONS best setups,
+  //    so a wide universe widens *opportunity*, not exposure. CRYPTO_UNIVERSE
+  //    stays the fallback if discovery ever returns nothing.
+  CRYPTO_UNIVERSE_MODE: 'all', // 'configured' | 'all' (default: scan the whole market)
+  // How often (seconds) the dynamic 'all' universe is re-discovered. Alpaca's
+  // tradable-asset list changes rarely, so an hour keeps API load negligible.
+  CRYPTO_UNIVERSE_REFRESH_SEC: '3600',
 
   // ---- Sizing ----------------------------------------------------------------
   // Fraction of *available cash* to deploy per position. Day-trading takes fewer,
@@ -113,7 +124,7 @@ const LIVE_DEFAULTS = Object.freeze({
   PORT: '3000',
 
   // ---- Diagnostics / surface -------------------------------------------------
-  APP_VERSION: '0.3.0',
+  APP_VERSION: '0.3.1',
   LOG_TAIL_SIZE: '300', // /debug/logs ring buffer length
 
   // ---- Auth / CORS -----------------------------------------------------------

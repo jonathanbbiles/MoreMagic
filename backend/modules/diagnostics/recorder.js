@@ -26,6 +26,7 @@ function createRecorder({ equityMax = 500, tradesMax = 200 } = {}) {
     lastScan: null, // { tsMs, evaluated, candidates, entered, skipped }
     safety: { brakeActive: false, reasons: [] },
     regime: null,
+    universe: null, // { size, mode, tsMs } — how many symbols the last scan covered
   };
 
   return {
@@ -53,6 +54,9 @@ function createRecorder({ equityMax = 500, tradesMax = 200 } = {}) {
     },
     recordScan(summary) {
       state.lastScan = { tsMs: Date.now(), ...summary };
+    },
+    recordUniverse({ size, mode } = {}) {
+      state.universe = { size: Number(size) || 0, mode: mode || null, tsMs: Date.now() };
     },
     setSafety(brakeActive, reasons = []) {
       state.safety = { brakeActive: !!brakeActive, reasons };
@@ -82,6 +86,7 @@ function createRecorder({ equityMax = 500, tradesMax = 200 } = {}) {
         lastScan: state.lastScan,
         safety: state.safety,
         regime: state.regime,
+        universe: state.universe,
       };
     },
     _state: state, // for tests
