@@ -35,7 +35,8 @@ flat by EOD), driven by pure technical signals + a smart scoring layer.
     fed NET pnl bps.
   - `diagnostics/recorder.js` — observational snapshot for `meta` (never gates).
   - `execution/` — Alpaca client + `alpacaEquities`/`alpacaCrypto` adapters returning
-    identical shapes; `selectAdapter()` picks by `EXECUTION_VENUE`.
+    identical shapes; `selectAdapter()` picks by `EXECUTION_VENUE`. The crypto adapter's
+    `listAssets()` discovers the full tradable USD-pair universe from `/v2/assets`.
   - `backtest.js` — pure replay backtester + synthetic bar generator.
   - `logger.js` — ring buffer for `/debug/logs`.
 - `scripts/` — `smoke`, `preflight`, `env_audit`, `backtest_strategy`, `reconcile`,
@@ -87,3 +88,12 @@ the name to `KNOWN_SIGNALS` in `validateEnv.js`.
   handling and conservative stop-first priority on whipsaw bars — instead of only checking
   the close. This stops the backtest from "escaping" a stop that was pierced mid-bar. Pairs
   with the 0.2.0 cost model so backtest expectancy is honest on both price *and* cost.
+- **0.3.1** — Whole-market crypto scan. `alpacaCrypto.listAssets()` discovers every active,
+  tradable USD-quoted pair from Alpaca's `/v2/assets` feed. New `CRYPTO_UNIVERSE_MODE`
+  (default `all`) makes the crypto scan cover the whole market instead of the 3-symbol
+  `CRYPTO_UNIVERSE`; `trade.js` resolves the universe per loop behind a
+  `CRYPTO_UNIVERSE_REFRESH_SEC` TTL cache and falls back to `CRYPTO_UNIVERSE` (or the last
+  good cache) if discovery is empty/unreachable — discovery errors never halt the loop.
+  A wider universe widens opportunity, not exposure: the smart layer still enters only
+  `MAX_OPEN_POSITIONS` and every gate/breaker is unchanged per symbol. Universe size is
+  surfaced observationally at `meta.universe`. `configured` mode restores the old behaviour.

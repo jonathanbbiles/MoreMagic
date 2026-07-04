@@ -73,6 +73,9 @@ the environment. The most important:
 |----------|---------|---------|
 | `TRADING_MODE` | `paper` | `paper` or `live` (live needs `ALLOW_LIVE=true` + live URL) |
 | `ASSET_CLASS` | `equities` | `equities` or `crypto` (selects the adapter + gates) |
+| `CRYPTO_UNIVERSE` | `BTC/USD,ETH/USD,LTC/USD` | pairs scanned in `configured` mode / the `all`-mode fallback |
+| `CRYPTO_UNIVERSE_MODE` | `all` | `all` scans every tradable USD pair Alpaca lists; `configured` scans only `CRYPTO_UNIVERSE` |
+| `CRYPTO_UNIVERSE_REFRESH_SEC` | `3600` | how often the `all` universe is re-discovered from `/v2/assets` |
 | `ACTIVE_SIGNALS` | `momentum` | `momentum`, `vwap_reversion`, or a comma list |
 | `POSITION_SIZING_PCT` | `0.10` | fraction of equity per entry, clamped to cash |
 | `MAX_OPEN_POSITIONS` | `4` | the smart layer keeps only the best few setups |
@@ -87,6 +90,18 @@ the environment. The most important:
 
 Alpaca credentials are **required** and never defaulted: `APCA_API_KEY_ID`,
 `APCA_API_SECRET_KEY`. See `backend/.env.example`.
+
+### Whole-market crypto scan
+
+With `ASSET_CLASS=crypto` the scan defaults to `CRYPTO_UNIVERSE_MODE=all`: on boot (and
+every `CRYPTO_UNIVERSE_REFRESH_SEC`) the crypto adapter pulls Alpaca's `/v2/assets` feed and
+scans **every active, tradable USD-quoted pair** — the whole market, not a hand-picked few.
+Discovery is cached on a TTL (one `/v2/assets` call per window, not per loop) and always
+falls back to `CRYPTO_UNIVERSE` if the feed is empty or unreachable, so a bad discovery pass
+never halts the loop. A wider universe widens **opportunity, not exposure**: the smart layer
+still ranks all candidates and enters only `MAX_OPEN_POSITIONS`, and every safety
+gate (spread, quote-freshness, circuit breaker, daily-loss) applies unchanged per symbol.
+Set `CRYPTO_UNIVERSE_MODE=configured` to pin the scan back to the `CRYPTO_UNIVERSE` list.
 
 ## Trading costs (fees + spread + slippage)
 

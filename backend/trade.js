@@ -49,6 +49,44 @@ function createEngine({ adapter, config, diagnostics, circuitBreaker, now = () =
   let dayStamp = null;
   let dayStartEquity = null;
   let lastView = { account: null, positions: [], openOrders: [], brokerOk: false, tsMs: null };
+  // Dynamic-universe cache: only used when the crypto adapter can discover the
+  // full tradable-pair list AND CRYPTO_UNIVERSE_MODE=all. Refreshed on a TTL so
+  // the scan sees the whole market without an /v2/assets call every loop.
+  let universeCache = { symbols: null, tsMs: 0 };
+
+  /**
+   * Resolve the symbols to scan this loop. Static (config.universe) unless the
+   * operator opted into dynamic crypto discovery, in which case we return the
+   * cached tradable-pair list — refreshing it when the TTL has elapsed and
+   * falling back to config.universe (or the last good cache) if discovery fails
+   * or returns nothing. Discovery errors NEVER halt the loop.
+   */
+  async function resolveUniverse(ts) {
+    const dynamic =
+      config.assetClass === 'crypto' &&
+      config.cryptoUniverseMode === 'all' &&
+      typeof adapter.listAssets === 'function';
+    if (!dynamic) return config.universe;
+
+    const ttlMs = (config.cryptoUniverseRefreshSec || 3600) * 1000;
+    const fresh = universeCache.symbols && ts - universeCache.tsMs < ttlMs;
+    if (fresh) return universeCache.symbols;
+
+    try {
+      const discovered = await adapter.listAssets();
+      if (Array.isArray(discovered) && discovered.length) {
+        const changed = !universeCache.symbols || universeCache.symbols.length !== discovered.length;
+        universeCache = { symbols: discovered, tsMs: ts };
+        if (changed) logger(`crypto universe: scanning ${discovered.length} tradable USD pairs`);
+        return discovered;
+      }
+    } catch (e) {
+      diagnostics.recordSkip('universe_discovery_error');
+    }
+    // Discovery unavailable this loop: reuse the last good list, else the
+    // configured fallback so the bot keeps trading the majors regardless.
+    return universeCache.symbols || config.universe;
+  }
 
   function updateDailyAnchor(ts, account) {
     const d = toEtParts(ts).dateStr;
@@ -171,8 +209,10 @@ function createEngine({ adapter, config, diagnostics, circuitBreaker, now = () =
     }
 
     // --- 3) Per-symbol entry evaluation ---------------------------------------
+    const universe = await resolveUniverse(ts);
+    diagnostics.recordUniverse({ size: universe.length, mode: config.cryptoUniverseMode });
     const candidates = [];
-    for (const symbol of config.universe) {
+    for (const symbol of universe) {
       if (held.has(symbol) || inFlight.has(symbol)) {
         skip('already_in_book');
         continue;

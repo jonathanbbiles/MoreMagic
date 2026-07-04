@@ -30,6 +30,24 @@ function createCryptoAdapter({ client, config }) {
       });
       return N.normalizeCryptoQuote(data, symbol);
     },
+    // Discover the full tradable crypto universe from Alpaca's trading API.
+    // Returns the sorted list of active, tradable USD-quoted symbols (e.g.
+    // "BTC/USD"). Non-USD legs (USDT/USDC/BTC-quoted) are dropped so every
+    // symbol prices against the account's cash currency. trade.js consults this
+    // (behind a TTL cache) only when CRYPTO_UNIVERSE_MODE=all.
+    async listAssets() {
+      const { data } = await client.trading.get('/v2/assets', {
+        params: { asset_class: 'crypto', status: 'active' },
+      });
+      const arr = Array.isArray(data) ? data : [];
+      const seen = new Set();
+      for (const a of arr) {
+        if (!a || a.tradable === false) continue;
+        const sym = typeof a.symbol === 'string' ? a.symbol.trim() : '';
+        if (sym.endsWith('/USD')) seen.add(sym);
+      }
+      return Array.from(seen).sort();
+    },
   };
 }
 

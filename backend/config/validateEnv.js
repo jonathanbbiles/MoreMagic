@@ -106,6 +106,18 @@ function validateEnv(env = process.env) {
   // ---- Universe --------------------------------------------------------------
   cfg.equitiesUniverse = list(env.EQUITIES_UNIVERSE);
   cfg.cryptoUniverse = list(env.CRYPTO_UNIVERSE);
+  // Crypto universe discovery mode. 'all' => trade.js discovers every tradable
+  // USD-quoted pair from Alpaca's /v2/assets feed (refreshed on a TTL) and falls
+  // back to CRYPTO_UNIVERSE only if discovery returns nothing. So CRYPTO_UNIVERSE
+  // stays required (as the fallback) even under 'all'.
+  cfg.cryptoUniverseMode = String(env.CRYPTO_UNIVERSE_MODE || '').toLowerCase();
+  if (!['configured', 'all'].includes(cfg.cryptoUniverseMode)) {
+    errors.push(`CRYPTO_UNIVERSE_MODE must be "configured" or "all" (got "${env.CRYPTO_UNIVERSE_MODE}")`);
+  }
+  cfg.cryptoUniverseRefreshSec = num(env.CRYPTO_UNIVERSE_REFRESH_SEC);
+  if (!(cfg.cryptoUniverseRefreshSec >= 30 && cfg.cryptoUniverseRefreshSec <= 86400)) {
+    errors.push('CRYPTO_UNIVERSE_REFRESH_SEC must be 30..86400');
+  }
   if (cfg.assetClass === 'both') {
     cfg.universe = []; // each derived engine carries its own per-class universe
     if (cfg.equitiesUniverse.length === 0) errors.push('EQUITIES_UNIVERSE is empty (required for ASSET_CLASS=both)');
