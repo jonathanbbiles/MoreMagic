@@ -61,14 +61,21 @@ const LIVE_DEFAULTS = Object.freeze({
   MIN_NOTIONAL_USD: '25', // skip dust orders below this notional
 
   // ---- Entry guardrails ------------------------------------------------------
-  MAX_SPREAD_BPS: '20', // reject entries when bid/ask spread exceeds this (bps)
-  MAX_QUOTE_AGE_MS: '5000', // reject stale quotes older than this
-  MIN_CONFIDENCE: '0.55', // signal confidence floor (0..1) before we consider it
-  MIN_SCORE: '0.50', // smart-layer composite score floor to actually enter
+  // Loosened 2026-07-04 for the paper crypto experiment: with the whole-market
+  // scan live, ~26 of ~36 crypto candidates/scan were rejected on spread alone
+  // (the alt books are wider than the 3 blue-chips). These admit more, at the
+  // cost of worse execution — the circuit breaker + cost model keep it honest.
+  // Tighten back to 20 / 5000 / 0.55 / 0.50 to restore the conservative posture.
+  MAX_SPREAD_BPS: '45', // reject entries when bid/ask spread exceeds this (bps)
+  MAX_QUOTE_AGE_MS: '8000', // reject stale quotes older than this
+  MIN_CONFIDENCE: '0.45', // signal confidence floor (0..1) before we consider it
+  MIN_SCORE: '0.40', // smart-layer composite score floor to actually enter
 
   // ---- Signals --------------------------------------------------------------
   // Comma-separated active signals evaluated each scan; the best ok+scored wins.
-  ACTIVE_SIGNALS: 'momentum', // 'momentum' | 'vwap_reversion' | 'momentum,vwap_reversion'
+  // Both signals on (2026-07-04): momentum enters uptrends, vwap_reversion enters
+  // dips — together they surface more entries than momentum alone.
+  ACTIVE_SIGNALS: 'momentum,vwap_reversion', // 'momentum' | 'vwap_reversion' | 'momentum,vwap_reversion'
 
   // ---- Exit management (day-trader horizon: minutes to hours) -----------------
   TAKE_PROFIT_BPS: '120', // +1.2% target — capture an intraday swing, not a scalp
@@ -124,7 +131,7 @@ const LIVE_DEFAULTS = Object.freeze({
   PORT: '3000',
 
   // ---- Diagnostics / surface -------------------------------------------------
-  APP_VERSION: '0.3.1',
+  APP_VERSION: '0.3.2',
   LOG_TAIL_SIZE: '300', // /debug/logs ring buffer length
 
   // ---- Auth / CORS -----------------------------------------------------------

@@ -88,6 +88,16 @@ the name to `KNOWN_SIGNALS` in `validateEnv.js`.
   handling and conservative stop-first priority on whipsaw bars — instead of only checking
   the close. This stops the backtest from "escaping" a stop that was pierced mid-bar. Pairs
   with the 0.2.0 cost model so backtest expectancy is honest on both price *and* cost.
+- **0.3.2** — Entry-guardrail loosening (paper crypto experiment). With the whole-market
+  scan live, ~26 of ~36 crypto candidates/scan were rejected on `spread_too_wide` alone
+  (alt books are wider than the 3 blue-chips). Defaults loosened to admit more entries:
+  `MAX_SPREAD_BPS` 20→45, `MAX_QUOTE_AGE_MS` 5000→8000, `MIN_CONFIDENCE` 0.55→0.45,
+  `MIN_SCORE` 0.50→0.40, and `ACTIVE_SIGNALS` momentum→`momentum,vwap_reversion` (adds
+  dip entries). These are global (both engines) and trade selectivity for volume at the
+  cost of worse execution — the cost model still nets fees+spread into the scorecard and
+  the realized-expectancy circuit breaker (`CB_EXPECTANCY_FLOOR_BPS=-5`) still auto-halts a
+  bleeding signal, so the experiment can't silently drain the account. Revert by setting the
+  five vars back (20 / 8000→5000 / 0.55 / 0.50 / `momentum`) in env or restoring the defaults.
 - **0.3.1** — Whole-market crypto scan. `alpacaCrypto.listAssets()` discovers every active,
   tradable USD-quoted pair from Alpaca's `/v2/assets` feed. New `CRYPTO_UNIVERSE_MODE`
   (default `all`) makes the crypto scan cover the whole market instead of the 3-symbol
