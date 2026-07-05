@@ -152,3 +152,13 @@ No `render.yaml` needed.
 `validateEnv` refuses live unless all of those line up.
 
 See [`docs/STRATEGY.md`](docs/STRATEGY.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Deployment must be always-on
+
+The strategy loop and the in-memory safety state (circuit-breaker ledger, scorecard) only
+work if the process runs continuously. On a free hosting tier that sleeps when idle, the
+loop pauses — open positions go unmanaged and can run past their stops — and the breaker/
+scorecard reset on every wake (so the breaker never reaches its trade minimum to trip).
+Run it on an always-on instance, or set `KEEPALIVE_URL` to the service's own public URL so
+it self-pings (`KEEPALIVE_SEC`, default 600s) and stays awake. An external cron/uptime ping
+is equally good and more robust than a self-ping.

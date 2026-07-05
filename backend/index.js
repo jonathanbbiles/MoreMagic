@@ -228,9 +228,29 @@ function start() {
   const timer = setInterval(tick, config.scanIntervalSec * 1000);
   tick(); // run one immediately
 
+  // Optional keep-alive. On free hosting tiers the web service sleeps without
+  // inbound traffic, which PAUSES the strategy loop (positions go unmanaged and
+  // run past their stops) AND resets the in-memory breaker/scorecard. Pointing
+  // KEEPALIVE_URL at this service's own public URL self-generates inbound traffic
+  // to stay awake. A paid always-on instance or an external cron is the durable fix.
+  let keepAlive = null;
+  if (config.keepaliveUrl) {
+    const ping = () => {
+      try {
+        Promise.resolve(fetch(config.keepaliveUrl, { method: 'GET' })).catch(() => {});
+      } catch (_) {
+        /* fetch unavailable — ignore */
+      }
+    };
+    keepAlive = setInterval(ping, config.keepaliveSec * 1000);
+    if (keepAlive.unref) keepAlive.unref();
+    log(`keep-alive: pinging ${config.keepaliveUrl} every ${config.keepaliveSec}s to stay awake`);
+  }
+
   const shutdown = (sig) => {
     log(`received ${sig}, shutting down`, 'warn');
     clearInterval(timer);
+    if (keepAlive) clearInterval(keepAlive);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   };

@@ -133,8 +133,15 @@ const LIVE_DEFAULTS = Object.freeze({
   ENABLE_TRADING: 'true', // master switch; false => observe only, never order
   PORT: '3000',
 
+  // ---- Keep-alive (free-tier hosting) ----------------------------------------
+  // On a sleeping free instance the strategy loop pauses and the in-memory
+  // circuit-breaker + scorecard reset. Set this to the service's OWN public URL
+  // to self-ping and stay awake. Empty => disabled (use a paid/always-on host).
+  KEEPALIVE_URL: '', // e.g. https://moremagic.onrender.com/health
+  KEEPALIVE_SEC: '600', // ping interval when KEEPALIVE_URL is set (seconds)
+
   // ---- Diagnostics / surface -------------------------------------------------
-  APP_VERSION: '0.4.0',
+  APP_VERSION: '0.5.0',
   LOG_TAIL_SIZE: '300', // /debug/logs ring buffer length
 
   // ---- Auth / CORS -----------------------------------------------------------

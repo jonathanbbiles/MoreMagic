@@ -115,3 +115,14 @@ the name to `KNOWN_SIGNALS` in `validateEnv.js`.
   is skipped as `below_cost_hurdle`. Directly counters the 0.3.2 floor-loosening + whole-
   market crypto + ~50 bps crypto taker fees, which otherwise let the loop enter setups that
   were net-negative before they started.
+- **0.5.0** — Reliability fixes (from live paper diagnostics: positions running past
+  stops, one symbol stacked ~3x, and a free-tier instance that kept sleeping). (1) EXITS:
+  reconcileExits now cancels stale open orders of ANY side (a stuck exit SELL reserves the
+  position's qty → `qty_available:0` → the next close errors and the loser runs past its
+  stop), and on a close error it cancels that symbol's open orders to free the qty for a
+  clean retry next loop. (2) DE-DUP: an entry is skipped when the symbol is already in
+  `positionMeta` — set the instant an order is submitted — so a fast-filling crypto order
+  can't be re-entered before its position is visible (the ~3x stacking). (3) KEEP-ALIVE:
+  optional `KEEPALIVE_URL` self-ping (`KEEPALIVE_SEC`) keeps a free-tier web service awake
+  so the loop actually runs 24/7 and the in-memory breaker/scorecard stop resetting — a
+  paid always-on host or external cron is the durable fix.

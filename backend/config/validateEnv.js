@@ -240,6 +240,10 @@ function validateEnv(env = process.env) {
 
   // ---- Loop ------------------------------------------------------------------
   cfg.scanIntervalSec = num(env.SCAN_INTERVAL_SEC);
+  cfg.keepaliveUrl = String(env.KEEPALIVE_URL || '').trim();
+  cfg.keepaliveSec = num(env.KEEPALIVE_SEC);
+  if (cfg.keepaliveUrl && !/^https:\/\//.test(cfg.keepaliveUrl)) errors.push('KEEPALIVE_URL must be an https URL or empty');
+  if (!(cfg.keepaliveSec >= 30 && cfg.keepaliveSec <= 3600)) errors.push('KEEPALIVE_SEC must be 30..3600');
   if (!(cfg.scanIntervalSec >= 5 && cfg.scanIntervalSec <= 3600)) errors.push('SCAN_INTERVAL_SEC must be 5..3600');
   cfg.enableTrading = bool(env.ENABLE_TRADING);
   cfg.port = num(env.PORT);

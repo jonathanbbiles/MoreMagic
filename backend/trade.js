@@ -123,9 +123,12 @@ function createEngine({ adapter, config, diagnostics, circuitBreaker, now = () =
   async function reconcileExits({ ts, ms, positions, openOrders }) {
     const summary = { exits: 0, flatten: !!ms.shouldFlatten, staleCancelled: 0, closed: [], closedSymbols: [] };
 
-    // Cancel stale unfilled BUY entry orders.
+    // Cancel stale unfilled orders — entry BUYs AND stuck exit SELLs alike. A
+    // stuck sell reserves the position's qty (qty_available -> 0), which makes the
+    // next closePosition fail with nothing to sell and lets a loser run past its
+    // stop. Freeing stale orders lets the next loop submit a clean exit.
     for (const o of openOrders || []) {
-      if (o.side === 'buy' && o.submittedAtMs && ts - o.submittedAtMs > config.staleEntryTimeoutSec * 1000) {
+      if (o.submittedAtMs && ts - o.submittedAtMs > config.staleEntryTimeoutSec * 1000) {
         try {
           await adapter.cancelOrder(o.id);
           summary.staleCancelled++;
@@ -167,6 +170,19 @@ function createEngine({ adapter, config, diagnostics, circuitBreaker, now = () =
         logger(`EXIT ${p.symbol} ${reason} pnl=${plBps != null ? plBps.toFixed(1) + 'bps' : 'n/a'}`);
       } catch (e) {
         diagnostics.recordSkip('exit_order_error');
+        // A stuck open order (often a prior unfilled exit) can reserve the qty and
+        // make closePosition fail with 0 available. Cancel this symbol's open orders
+        // now so the next loop can retry a clean exit instead of the loser running.
+        for (const o of openOrders || []) {
+          if (o.symbol === p.symbol) {
+            try {
+              await adapter.cancelOrder(o.id);
+              summary.staleCancelled++;
+            } catch (_) {
+              diagnostics.recordSkip('cancel_order_error');
+            }
+          }
+        }
       }
     }
     return summary;
@@ -214,7 +230,10 @@ function createEngine({ adapter, config, diagnostics, circuitBreaker, now = () =
     diagnostics.recordUniverse({ size: universe.length, mode: config.cryptoUniverseMode });
     const candidates = [];
     for (const symbol of universe) {
-      if (held.has(symbol) || inFlight.has(symbol)) {
+      if (held.has(symbol) || inFlight.has(symbol) || positionMeta.has(symbol)) {
+        // positionMeta is set the instant we submit an entry, so a fast-filling
+        // crypto order can't be re-entered on the next loop before its position
+        // shows up in getPositions — which is how one symbol stacked to ~3x size.
         skip('already_in_book');
         continue;
       }

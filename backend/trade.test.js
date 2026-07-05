@@ -256,3 +256,43 @@ test('runOnce skips a setup that cannot clear its round-trip cost (cost-edge gat
   assert.strictEqual(adapter.calls.submit.length, 0);
   assert.ok((diagnostics.getMeta().skipReasons.below_cost_hurdle || 0) >= 1, 'skipped on the cost hurdle');
 });
+
+test('reconcileExits cancels a stale exit (sell) order so reserved qty frees up', async () => {
+  const adapter = mockAdapter({
+    async getPositions() { return []; },
+    async getOpenOrders() {
+      return [{ id: 'sell1', symbol: 'AAA', side: 'sell', submittedAtMs: MARKET_OPEN_TS - 120000 }]; // 120s old -> stale
+    },
+  });
+  const engine = createEngine({ adapter, config: baseConfig(), diagnostics: createRecorder(), circuitBreaker: createCircuitBreaker(), now: () => MARKET_OPEN_TS });
+  const r = await engine.runOnce();
+  assert.deepStrictEqual(adapter.calls.cancel, ['sell1']);
+  assert.strictEqual(r.exits.staleCancelled, 1);
+});
+
+test('reconcileExits frees reserved qty by cancelling a symbol\'s open orders when a close errors', async () => {
+  const adapter = mockAdapter({
+    async getPositions() {
+      // -10% is well past the 80 bps stop -> should exit
+      return [{ symbol: 'AAA', qty: 10, avgEntryPrice: 100, currentPrice: 90, unrealizedPlpc: -0.1, unrealizedPl: -10 }];
+    },
+    async getOpenOrders() {
+      // a FRESH (not stale) stuck sell that is reserving the qty
+      return [{ id: 'stuckSell', symbol: 'AAA', side: 'sell', submittedAtMs: MARKET_OPEN_TS - 1000 }];
+    },
+    async closePosition() { throw new Error('insufficient qty available'); },
+  });
+  const engine = createEngine({ adapter, config: baseConfig(), diagnostics: createRecorder(), circuitBreaker: createCircuitBreaker(), now: () => MARKET_OPEN_TS });
+  const r = await engine.runOnce();
+  assert.strictEqual(r.exits.exits, 0); // the close failed
+  assert.ok(adapter.calls.cancel.includes('stuckSell'), 'cancelled the blocking order so the next loop can exit');
+});
+
+test('scanAndEnter will not re-enter a symbol already in positionMeta (no 3x stacking)', async () => {
+  const adapter = mockAdapter();
+  const engine = createEngine({ adapter, config: baseConfig(), diagnostics: createRecorder(), circuitBreaker: createCircuitBreaker(), now: () => MARKET_OPEN_TS });
+  engine._positionMeta.set('AAA', { entryTsMs: MARKET_OPEN_TS, signal: 'momentum', entryPrice: 100 }); // just-entered, position not visible yet
+  const r = await engine.runOnce();
+  assert.strictEqual(r.entries.entered, 0);
+  assert.strictEqual(adapter.calls.submit.length, 0);
+});
