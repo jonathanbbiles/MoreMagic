@@ -48,7 +48,12 @@ const LIVE_DEFAULTS = Object.freeze({
   //    smart layer still ranks and only enters MAX_OPEN_POSITIONS best setups,
   //    so a wide universe widens *opportunity*, not exposure. CRYPTO_UNIVERSE
   //    stays the fallback if discovery ever returns nothing.
-  CRYPTO_UNIVERSE_MODE: 'all', // 'configured' | 'all' (default: scan the whole market)
+  // EQUITIES PIVOT (2026-07-09): crypto market-order scalping is mathematically
+  // dead — the ~50 bps/side taker fee (57+ bps round trip) dwarfs the signals'
+  // ~7 bps gross edge (measured on 137k real crypto 1m bars: net ~-50 bps/trade).
+  // Default back to 'configured' so the whole-market crypto scan is NOT the live
+  // path; equities (commission-free) is the money path now.
+  CRYPTO_UNIVERSE_MODE: 'configured', // 'configured' | 'all'
   // How often (seconds) the dynamic 'all' universe is re-discovered. Alpaca's
   // tradable-asset list changes rarely, so an hour keeps API load negligible.
   CRYPTO_UNIVERSE_REFRESH_SEC: '3600',
@@ -76,9 +81,15 @@ const LIVE_DEFAULTS = Object.freeze({
 
   // ---- Signals --------------------------------------------------------------
   // Comma-separated active signals evaluated each scan; the best ok+scored wins.
-  // Both signals on (2026-07-04): momentum enters uptrends, vwap_reversion enters
-  // dips — together they surface more entries than momentum alone.
-  ACTIVE_SIGNALS: 'momentum,vwap_reversion', // 'momentum' | 'vwap_reversion' | 'momentum,vwap_reversion'
+  // EQUITIES PIVOT (2026-07-09): backtesting all signals on 78k real equities 1m
+  // bars showed trend-chasing (momentum) has ~zero gross edge at every horizon —
+  // it is a coin flip and only pays the cost. Mean-REVERSION is the only family
+  // with a positive gross edge; vwap_reversion_pro (deeper dislocation + a real
+  // range reclaim) lifts win rate to ~50% and nets positive on some baskets. So
+  // the default is reversion-first. NOTE: the edge is promising but NOT yet proven
+  // durable (7-day sample); confirm on 30-60d via scripts/backtest_equities.js
+  // --source alpaca before trusting it live. Momentum stays available but off.
+  ACTIVE_SIGNALS: 'vwap_reversion_pro,vwap_reversion', // reversion-first; momentum retired from the default
 
   // ---- Exit management (day-trader horizon: minutes to hours) -----------------
   TAKE_PROFIT_BPS: '120', // +1.2% target — capture an intraday swing, not a scalp

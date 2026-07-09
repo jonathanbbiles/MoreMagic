@@ -20,6 +20,10 @@ function baseConfig(overrides = {}) {
     ...cfg,
     universe: ['AAA'],
     enableTrading: true,
+    // These engine-mechanics tests exercise entry/exit/cost-gate plumbing using a
+    // clean uptrend (accelUpBars) that fires momentum. Pin the signal here so they
+    // stay independent of the shipped ACTIVE_SIGNALS default (now reversion-first).
+    activeSignals: ['momentum'],
     minConfidence: 0.3,
     minScore: 0.2,
     rsiMin: 0,

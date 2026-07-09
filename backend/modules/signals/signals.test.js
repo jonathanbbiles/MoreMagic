@@ -36,8 +36,8 @@ function dipBelowVwap() {
   return bars(p);
 }
 
-test('signals registry exposes both signals', () => {
-  assert.deepStrictEqual(listSignals().sort(), ['momentum', 'vwap_reversion']);
+test('signals registry exposes all registered signals', () => {
+  assert.deepStrictEqual(listSignals().sort(), ['momentum', 'trend_pullback', 'vwap_reversion', 'vwap_reversion_pro']);
 });
 
 test('declines are structured and never throw on short input', () => {
@@ -92,4 +92,46 @@ test('evaluateSignal dispatches by name and guards unknown names', () => {
   assert.strictEqual(evaluateSignal('nope', {}).reason, 'unknown_signal:nope');
   const r = evaluateSignal('momentum', { symbol: 'T', bars1m: accelUp(), bars5m: accelUp(), config: { rsiMax: 100 } });
   assert.strictEqual(r.ok, true);
+});
+
+// --- Equities-pivot signals (2026-07-09): trend_pullback + vwap_reversion_pro ---
+const { evaluateTrendPullbackSignal } = require('./trendPullbackSignal');
+const { evaluateVwapReversionProSignal } = require('./vwapReversionProSignal');
+
+test('new signals are registered and dispatchable by name', () => {
+  for (const name of ['trend_pullback', 'vwap_reversion_pro']) {
+    const r = evaluateSignal(name, { symbol: 'T', bars1m: accelUp(), bars5m: accelUp() });
+    assert.strictEqual(typeof r.ok, 'boolean'); // never throws, always contract-shaped
+  }
+});
+
+test('new signals decline structurally on short input (never throw)', () => {
+  for (const fn of [evaluateTrendPullbackSignal, evaluateVwapReversionProSignal]) {
+    const r = fn({ symbol: 'X', bars1m: bars([1, 2, 3]), bars5m: bars([1, 2, 3]) });
+    assert.strictEqual(r.ok, false);
+    assert.ok(typeof r.reason === 'string' && r.reason.length > 0);
+  }
+});
+
+test('new signals are pure — inputs are not mutated', () => {
+  const input = accelUp();
+  const snap = JSON.stringify(input);
+  evaluateTrendPullbackSignal({ symbol: 'T', bars1m: input, bars5m: input });
+  evaluateVwapReversionProSignal({ symbol: 'T', bars1m: input, bars5m: input });
+  assert.strictEqual(JSON.stringify(input), snap);
+});
+
+test('vwap_reversion_pro emits a well-formed result on a controlled dip', () => {
+  const r = evaluateVwapReversionProSignal({
+    symbol: 'T',
+    bars1m: dipBelowVwap(),
+    config: { rsiFloor: 5, rsiCeil: 70, minStretchAtr: 0.2 },
+  });
+  assert.strictEqual(typeof r.ok, 'boolean');
+  if (r.ok) {
+    assert.strictEqual(r.side, 'buy');
+    assert.strictEqual(r.signal, 'vwap_reversion_pro');
+    assert.ok(r.confidence >= 0 && r.confidence <= 1);
+    assert.ok(r.projectedBps >= 0);
+  }
 });

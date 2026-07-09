@@ -154,7 +154,7 @@ function validateEnv(env = process.env) {
   if (!Number.isFinite(cfg.minNetEdgeBps)) errors.push('MIN_NET_EDGE_BPS must be a number');
 
   // ---- Signals ---------------------------------------------------------------
-  const KNOWN_SIGNALS = ['momentum', 'vwap_reversion'];
+  const KNOWN_SIGNALS = ['momentum', 'vwap_reversion', 'trend_pullback', 'vwap_reversion_pro'];
   cfg.activeSignals = list(env.ACTIVE_SIGNALS);
   if (cfg.activeSignals.length === 0) errors.push('ACTIVE_SIGNALS must name at least one signal');
   for (const sName of cfg.activeSignals) {
