@@ -74,9 +74,9 @@ the environment. The most important:
 | `TRADING_MODE` | `paper` | `paper` or `live` (live needs `ALLOW_LIVE=true` + live URL) |
 | `ASSET_CLASS` | `equities` | `equities` or `crypto` (selects the adapter + gates) |
 | `CRYPTO_UNIVERSE` | `BTC/USD,ETH/USD,LTC/USD` | pairs scanned in `configured` mode / the `all`-mode fallback |
-| `CRYPTO_UNIVERSE_MODE` | `all` | `all` scans every tradable USD pair Alpaca lists; `configured` scans only `CRYPTO_UNIVERSE` |
+| `CRYPTO_UNIVERSE_MODE` | `configured` | `configured` scans only `CRYPTO_UNIVERSE`; `all` scans every tradable USD pair (crypto scalping is retired — see the equities pivot) |
 | `CRYPTO_UNIVERSE_REFRESH_SEC` | `3600` | how often the `all` universe is re-discovered from `/v2/assets` |
-| `ACTIVE_SIGNALS` | `momentum,vwap_reversion` | `momentum`, `vwap_reversion`, or a comma list |
+| `ACTIVE_SIGNALS` | `vwap_reversion_pro,vwap_reversion` | reversion-first (equities pivot). Also available: `momentum`, `trend_pullback` |
 | `MAX_SPREAD_BPS` | `45` | reject entries wider than this bid/ask spread (bps) |
 | `MIN_CONFIDENCE` / `MIN_SCORE` | `0.45` / `0.40` | signal-confidence + smart-score floors to enter |
 | `POSITION_SIZING_PCT` | `0.10` | fraction of equity per entry, clamped to cash |
@@ -93,9 +93,20 @@ the environment. The most important:
 Alpaca credentials are **required** and never defaulted: `APCA_API_KEY_ID`,
 `APCA_API_SECRET_KEY`. See `backend/.env.example`.
 
-### Whole-market crypto scan
+### Equities pivot (v0.6.0)
 
-With `ASSET_CLASS=crypto` the scan defaults to `CRYPTO_UNIVERSE_MODE=all`: on boot (and
+The money path is **equities** (Alpaca commission-free, ~7.5 bps round-trip). Crypto
+market-order scalping was retired after real-data backtesting proved it mathematically
+dead: on 137k real crypto 1m bars the signals' gross edge is ~+7 bps/trade but the
+round-trip taker cost is ~57 bps → net ≈ −50 bps/trade. On real equities data momentum
+(trend-chasing) showed ~zero gross edge at every horizon; **mean-reversion** is the only
+positive-edge family, so the default is reversion-first (`vwap_reversion_pro`). That edge
+is promising but not yet proven durable — grade it on 30–60 days of the broker's own data
+with `node scripts/backtest_equities.js --source alpaca` once paper keys are set.
+
+### Whole-market crypto scan (legacy — off by default)
+
+With `ASSET_CLASS=crypto` **and** `CRYPTO_UNIVERSE_MODE=all` the crypto scan: on boot (and
 every `CRYPTO_UNIVERSE_REFRESH_SEC`) the crypto adapter pulls Alpaca's `/v2/assets` feed and
 scans **every active, tradable USD-quoted pair** — the whole market, not a hand-picked few.
 Discovery is cached on a TTL (one `/v2/assets` call per window, not per loop) and always

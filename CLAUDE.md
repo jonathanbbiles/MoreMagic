@@ -126,3 +126,26 @@ the name to `KNOWN_SIGNALS` in `validateEnv.js`.
   optional `KEEPALIVE_URL` self-ping (`KEEPALIVE_SEC`) keeps a free-tier web service awake
   so the loop actually runs 24/7 and the in-memory breaker/scorecard stop resetting — a
   paid always-on host or external cron is the durable fix.
+- **0.6.0** — EQUITIES PIVOT (money path) + signal research, driven by real-data
+  backtesting. Verdict from measurement, not opinion: **crypto market-order scalping is
+  mathematically dead** — on 137k real Alpaca crypto 1m bars the signals' gross edge is
+  ~+7 bps/trade but the round-trip taker cost is ~57 bps, so net ≈ −50 bps/trade (PF ~0.3);
+  the 0.4.0 cost-edge gate blocks ~80% of fires but survivors are still net-negative
+  (it filters on volatility, not realized edge). So: (1) **equities is now primary** —
+  `ASSET_CLASS` default already `equities`, `CRYPTO_UNIVERSE_MODE` default reverted `all`→
+  `configured` (don't scan the dead crypto market). (2) **Signal findings on 78k real
+  equities 1m bars (Yahoo, free/no-auth):** momentum (trend-chasing) has ~ZERO gross edge
+  at every exit horizon — a coin flip that only pays the cost (net −6 bps); mean-REVERSION
+  is the only family with positive gross edge. New `vwap_reversion_pro` (deeper ≥1.1-ATR
+  dislocation + a real prior-bar-high reclaim) lifts win rate 43%→~50% and nets **+8.6
+  bps/trade on one basket** — BUT out-of-sample on a different basket it was only +0.9, so
+  the edge is **promising, directionally right, NOT yet proven durable** (7-day sample).
+  `ACTIVE_SIGNALS` default → `vwap_reversion_pro,vwap_reversion` (reversion-first; momentum
+  retired from the default but still available). New signals `trend_pullback` (measured
+  WORSE, kept as an off-by-default template) and `vwap_reversion_pro` are registered +
+  unit-tested. (3) **New harness `scripts/backtest_equities.js`** grades signals on real
+  equities 1m bars via `--source yahoo` (free, no keys, ~7d) or `--source alpaca` (the live
+  broker feed, needs paper keys, 30-60d). Run the `alpaca` source once paper keys land to
+  confirm/deny the reversion edge out-of-sample before trusting it. 91 tests green.
+  NOTE: crypto data endpoints (`/v1beta3/crypto/us/...`) are PUBLIC (no auth), which is how
+  the crypto edge was measured with zero credentials; equities data needs keys.

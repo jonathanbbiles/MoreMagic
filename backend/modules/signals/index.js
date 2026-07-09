@@ -10,10 +10,14 @@
 
 const { evaluateMomentumSignal } = require('./momentumSignal');
 const { evaluateVwapReversionSignal } = require('./vwapReversionSignal');
+const { evaluateTrendPullbackSignal } = require('./trendPullbackSignal');
+const { evaluateVwapReversionProSignal } = require('./vwapReversionProSignal');
 
 const SIGNALS = Object.freeze({
   momentum: evaluateMomentumSignal,
   vwap_reversion: evaluateVwapReversionSignal,
+  trend_pullback: evaluateTrendPullbackSignal,
+  vwap_reversion_pro: evaluateVwapReversionProSignal,
 });
 
 function listSignals() {
